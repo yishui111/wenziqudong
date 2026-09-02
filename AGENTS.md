@@ -46,3 +46,10 @@
   `tts_service\tmp\`、测试产物音频、密钥文件（.env 等一律 `.gitignore`，勿 `git add -f` 强推）。
 - 不修改训练方发布的模型文件（只读）。
 - 文档与注释使用简体中文；用户当场说的话优先级最高。
+---
+### 关键点（2026-09-02 上传整理补充）
+- tts_service/tts_api.py = 自研 FastAPI 封装（端口 8060；网页 + OpenAI 兼容 /v1/audio/speech + 看门狗），字节原样入库
+- 引擎/模型/端口/设备全部可用环境变量覆盖：GSV_ROOT / GSV_MODELS_DIR / TTS_API_PORT / TTS_DEVICE
+- 大件不入库：gptsovits\GPT-SoVITS(~4.6GB)、runtime\py312+ffmpeg(~9.6GB)、tts_service\models 音色(~1.9GB 真人音色)；摆位见 DEPLOY
+- 原中文 bat 已重写为 ASCII/CRLF/无 BOM；一键启动文字驱动语音.bat 为兼容壳
+- tests 只保留自研脚本（E:\ 路径已相对化）；调试音频/转写/QA 记录不入库
