@@ -1,0 +1,10 @@
+# 本服务（tts_service\tts_api.py）直接依赖。
+# 注意：torch/torchaudio 及 GPT-SoVITS 引擎的其余依赖不在此列，
+# 请按官方 GPT-SoVITS requirements.txt 安装（GPU 版 torch 请用 PyTorch 官网的 CUDA 安装命令）。
+# 详见 DEPLOY.md 第 6.2 节。
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+numpy>=1.24
+soundfile>=0.12
+requests>=2.31
