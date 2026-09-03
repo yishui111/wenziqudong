@@ -368,9 +368,25 @@ def _crossfade_join(pieces, sr, fade=0.12):
 
 # ---------------- FastAPI 服务 ----------------
 from fastapi import FastAPI, Form, HTTPException, Request  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse, HTMLResponse, Response  # noqa: E402
 
 app = FastAPI(title="文字驱动语音（GPT-SoVITS TTS）")
+
+# NOTICE: 开放浏览器跨域（AIRI 数字人前端在 localhost:5173 直接调本服务）。
+# 仅放开本地开发端口；如需更严可把列表换成具体 origin。不影响 TTS 合成逻辑。
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+        "http://127.0.0.1:8088",
+        "http://localhost:8088",
+    ],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 INDEX_HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
