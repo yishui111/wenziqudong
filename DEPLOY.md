@@ -120,14 +120,17 @@ python tts_service\tts_api.py
 | 接口 | 方法 | 说明 |
 | --- | --- | --- |
 | `/` | GET | 网页界面 |
-| `/tts` | POST | `text`+`character`+可选 `speed/top_k/top_p/temperature/sample_steps` → wav |
+| `/tts` | POST | `text`+`character`+可选 `speed/top_k/top_p/temperature/sample_steps` → wav（内存直出，不落盘） |
 | `/models` | GET | 角色列表（热刷新） |
-| `/health` | GET | 健康检查（status/device/ready_roles） |
+| `/health` | GET | 健康检查（status/device/ready_roles/max_chars） |
 | `/v1/audio/speech` | POST | OpenAI 兼容 TTS：JSON `{model, input, voice, speed}` → mp3（voice=角色名） |
 | `/v1/audio/voices` | GET | OpenAI 兼容音色列表 |
 | `/v1/models` | GET | OpenAI 兼容模型列表 |
 | `/api/delete_role` | POST | 删除角色（Form: character，真删本地模型目录） |
 | `/api/cache_mode` | GET/POST | 缓存策略查询/设置（multi=1/0，持久化到 tmp\tts_cache_mode.txt） |
+| `/api/cache_status` | GET | 查看显存中已缓存的角色模型 |
+| `/api/free_memory` | POST | 清空角色模型缓存并释放显存 |
+| `/api/reset` | POST | 服务卡住时一键重置（退出进程，看门狗自动拉起） |
 
 ```bash
 curl -X POST -F "text=大家好，我是雷军。" -F "character=liejun" http://127.0.0.1:8060/tts -o out.wav
@@ -135,7 +138,7 @@ curl -X POST -H "Content-Type: application/json" -d "{\"model\":\"liejun\",\"inp
 ```
 
 自检命令：`GET /health` 正常 → `GET /models` 列出角色 → `POST /tts` 冒烟合成 wav 可播放。
-测试脚本：`python tests\test_tts_client.py --character <角色名>`；`pwsh -File tests\换角色复现测试.ps1`（逐个角色加载合成）。
+测试脚本：`python tests\test_tts_client.py --character <角色名>`；`pwsh -File tests\换角色复现测试.ps1`（逐个角色加载合成）；`python tests\test_split_text.py`（分句/清洗逻辑回归，不依赖服务）。
 
 ## 8. 常用环境变量
 
@@ -147,7 +150,8 @@ curl -X POST -H "Content-Type: application/json" -d "{\"model\":\"liejun\",\"inp
 | `GSV_ROOT` | `<仓库>\gptsovits\GPT-SoVITS` | 引擎根目录 |
 | `GSV_MODELS_DIR` | `<仓库>\tts_service\models` | 音色模型目录 |
 | `TTS_MULTI_ROLES` | 空 | `1` = 启动即多角色缓存 |
-| `TTS_SAMPLE_STEPS` | `64` | GPT 采样步数（32 更快、偶发跳读） |
+| `TTS_SAMPLE_STEPS` | `64` | GPT 采样步数（32 更快、偶发跳读；网页与 OpenAI 端点共用） |
+| `TTS_MAX_CHARS` | `1000` | 单次合成字数上限（长文本请分段，或调大此值） |
 | `TTS_TMP_ROOT` | `<仓库>\tts_service\tmp` | 临时输出/日志目录 |
 | `FFMPEG_PATH` | 空 | 指向 ffmpeg.exe 的绝对路径（mp3 输出用） |
 
@@ -161,6 +165,7 @@ curl -X POST -H "Content-Type: application/json" -d "{\"model\":\"liejun\",\"inp
 - **合成漏字/跳读**：优先检查该角色 `ref.wav` 时长（3–10 秒）与 `ref_text.txt` 是否一致；本服务默认已用保守采样参数 + 20 字分句。
 - **无 GPU 也想跑**：`set TTS_DEVICE=cpu` 后启动（不吃显存，合成稍慢）。
 - **端口冲突**：`set TTS_API_PORT=8061` 后启动；但页面与外部系统配置的地址也要跟着改。
+- **页面点「重置服务」被拒绝**：说明服务当前不是看门狗托管的（如手动 python 启动、看门狗已死），直接重置会无法自愈。按提示双击 `stop.bat` 再 `start.bat`（start.bat 启动时也会对这种状态打印 WARNING）。
 
 ## 10. 更新约定
 

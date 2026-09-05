@@ -25,6 +25,11 @@ New-Item -ItemType Directory -Force -Path (Split-Path $pidFile) | Out-Null
 $env:PATH = "$root\runtime\ffmpeg\bin;$env:PATH"
 
 function Write-Log([string]$m) {
+    # 日志封顶 1MB：超过则只留最后 200 行，防止无限增长
+    if ((Test-Path $logFile) -and ((Get-Item $logFile).Length -gt 1MB)) {
+        $tail = Get-Content $logFile -Tail 200 -ErrorAction SilentlyContinue
+        Set-Content -Path $logFile -Value $tail -Encoding UTF8
+    }
     Add-Content -Path $logFile -Value ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + " " + $m) -Encoding UTF8
 }
 

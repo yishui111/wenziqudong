@@ -23,6 +23,7 @@ rem ---------- 1) already running on 8060 ? ----------
 powershell -NoProfile -Command "try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8060/health' -TimeoutSec 3; $c = Get-NetTCPConnection -LocalPort 8060 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; Write-Output ('Service already running (PID ' + $c.OwningProcess + '), roles: ' + ($r.ready_roles -join ',')); exit 0 } catch { exit 1 }"
 if %errorlevel% equ 0 (
     echo  Service already running - no need to start again.
+    powershell -NoProfile -Command "$f='%PIDFILE%'; $alive = $false; if (Test-Path $f) { try { $j = Get-Content $f -Raw | ConvertFrom-Json; if ($j.watchdog) { $wp = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $j.watchdog) -ErrorAction SilentlyContinue; if ($wp -and $wp.Name -eq 'powershell.exe' -and $wp.CommandLine -match 'tts_watchdog') { $alive = $true } } } catch {} }; if ($alive) { Write-Output '  Watchdog is protecting the service (auto-restart on crash).' } else { Write-Output '  WARNING: watchdog is NOT running - no auto-restart protection.'; Write-Output '  To restore it: run stop.bat, then start.bat again.' }"
     echo  Double-clicking again will NOT create a second service.
     timeout /t 5 >nul 2>nul
     exit /b 0

@@ -25,9 +25,8 @@ import os
 import re
 import shutil
 import sys
-import tempfile
 import threading
-import uuid
+import time
 
 import numpy as np
 import soundfile as sf
@@ -47,8 +46,10 @@ if TTS_DEVICE not in ("cuda", "cpu"):
 # 保证不改音色时首次朗读不用等模型加载。可被 TTS_DEFAULT_VOICE 覆盖。
 TTS_DEFAULT_VOICE = (os.environ.get("TTS_DEFAULT_VOICE", "azhong") or "azhong").strip()
 # GPT 采样步数：64（默认，更稳、减少跳读漏字；速度稍慢）/ 32（快，偶发跳读）。
-# 想更快可设 TTS_SAMPLE_STEPS=32。
+# 想更快可设 TTS_SAMPLE_STEPS=32。网页 /tts 与 OpenAI 端点共用这一个默认值。
 TTS_SAMPLE_STEPS = int(os.environ.get("TTS_SAMPLE_STEPS", "64") or "64")
+# 单次合成字数上限：默认 1000，长文本请分段（或设 TTS_MAX_CHARS 调大）。
+TTS_MAX_CHARS = int(os.environ.get("TTS_MAX_CHARS", "1000") or "1000")
 CHARACTER_RE = re.compile(r"^[A-Za-z0-9_\u4e00-\u9fff]+$")
 
 TMP_ROOT = os.environ.get("TTS_TMP_ROOT", os.path.join(SCRIPT_DIR, "tmp"))
@@ -61,6 +62,23 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("wenziqudong_tts")
+
+
+def _cleanup_stale_wavs():
+    """启动时清掉上次运行遗留的临时合成音频。
+    现在 /tts 已改为内存直出不再落盘，这里只兜底清理历史堆积（被占用的文件会跳过）。"""
+    try:
+        for name in os.listdir(TMP_ROOT):
+            if name.startswith("tts_") and name.endswith(".wav"):
+                try:
+                    os.remove(os.path.join(TMP_ROOT, name))
+                except OSError:
+                    pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_cleanup_stale_wavs()
 
 
 def list_role_dirs():
@@ -143,7 +161,6 @@ import api as gpt_api  # noqa: E402
 
 _gsv_lock = threading.Lock()
 _synth_lock = threading.Lock()  # 整个合成过程串行，避免并发请求干扰模型状态
-_loaded_char = _initial_role
 _speaker_cache = {}  # 已加载过的角色常驻内存，切换角色不再重新读盘
 # 缓存策略：默认单角色（切换角色自动清理上一个并释放显存）；页面可勾选多角色缓存。
 # 勾选状态持久化到 tmp\tts_cache_mode.txt，服务重启后保持用户选择。
@@ -173,7 +190,6 @@ def gpt_sovits_tts(character, text, top_k, top_p, temperature, speed, sample_ste
     """用 GPT-SoVITS 按角色音色合成文字语音。返回 (音频numpy, 采样率)。
     缓存策略：默认只缓存一个角色（切换角色时自动清理上一个并释放显存），
     页面勾选"缓存多个角色模型"后（_multi_roles=True）才保留多个。"""
-    global _loaded_char
     info = ROLES[character]
     if not info["ready"]:
         raise RuntimeError("角色 %s 模型不完整（缺 %s）" % (character, "、".join(info["missing"])))
@@ -197,7 +213,6 @@ def gpt_sovits_tts(character, text, top_k, top_p, temperature, speed, sample_ste
             logger.info("角色模型加载完成: %s", character)
         if gpt_api.speaker_list.get("default") is not _speaker_cache[character]:
             gpt_api.speaker_list["default"] = _speaker_cache[character]
-            _loaded_char = character
         gen = gpt_api.get_tts_wav(
             ref_wav_path=info["ref"],
             prompt_text=ref_text,
@@ -225,18 +240,21 @@ def gpt_sovits_tts(character, text, top_k, top_p, temperature, speed, sample_ste
 
 
 def split_text_for_tts(text, max_len=60):
-    """仅对长文字分句：按句末标点切，单句超过 max_len 再硬切。短文字保持整段，保证语气连贯。"""
-    import re as _re
+    """仅对长文字分句：按句末标点切，单句超过 max_len 再硬切。短文字保持整段，保证语气连贯。
+    注意：末尾没有句末标点的剩余文字也要保留（旧版会把最后一句丢掉不读，
+    整段没有标点的长文甚至会返回空导致合成失败），这里已修复。"""
     puncs = "。？！；…"
-    parts = _re.split("([" + puncs + "])", text)
+    parts = re.split("([" + puncs + "])", text)
     chunks = []
     cur = ""
-    for i in range(0, len(parts) - 1, 2):
-        cur += parts[i] + (parts[i + 1] if i + 1 < len(parts) else "")
-        if len(cur) >= 2 and (parts[i + 1] if i + 1 < len(parts) else ""):
-            chunks.append(cur)
-            cur = ""
-    if cur or (parts and not chunks):
+    for i in range(0, len(parts), 2):
+        cur += parts[i]                        # 文字段
+        if i + 1 < len(parts):                 # 后随句末标点
+            cur += parts[i + 1]
+            if len(cur.strip()) >= 2:
+                chunks.append(cur)
+                cur = ""
+    if cur.strip():                            # 末尾没标点的剩余文字（不能丢）
         chunks.append(cur)
     final = []
     for c in chunks:
@@ -258,25 +276,24 @@ def _clean_text_for_tts(text):
     """合成前清洗文本：去掉 GPT-SoVITS 无法处理的 markdown / URL / 邮箱 /
     代码块 / 特殊符号，保留中文、字母、数字与常用标点。
     解决“长回复含特殊内容时合成失败（500）→ 前端误回退系统语音”的问题。"""
-    import re as _re
     t = str(text or "")
-    t = _re.sub(r"```[\s\S]*?```", "", t)                      # 代码块
-    t = _re.sub(r"`([^`]*)`", r"\1", t)                        # 行内代码
-    t = _re.sub(r"^#{1,6}\s*", "", t, flags=_re.M)             # 标题 #
-    t = _re.sub(r"\*\*([^*\n]+)\*\*", r"\1", t)                # **粗体**
-    t = _re.sub(r"__([^_\n]+)__", r"\1", t)                    # __粗体__
-    t = _re.sub(r"~~([^~\n]+)~~", r"\1", t)                    # ~~删除线~~
-    t = _re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", t)            # [文字](链接)
-    t = _re.sub(r"https?://\S+", "网址", t)                    # URL
-    t = _re.sub(r"[\w.+-]+@[\w-]+\.[\w.-]+", "邮箱", t)        # 邮箱
-    t = _re.sub(r"^[\s]*[-*+]\s+", "", t, flags=_re.M)         # - 列表项
-    t = _re.sub(r"^\s*\d+[.、)]\s+", "", t, flags=_re.M)       # 1. 有序列表
-    # 删除白名单之外的字符（特殊符号/emoji 等）
-    t = _re.sub(
-        r"[^\u4e00-\u9fffA-Za-z0-9，。！？、；：\"\"''（）《》…—·,.!?%+\s]",
+    t = re.sub(r"```[\s\S]*?```", "", t)                      # 代码块
+    t = re.sub(r"`([^`]*)`", r"\1", t)                        # 行内代码
+    t = re.sub(r"^#{1,6}\s*", "", t, flags=re.M)             # 标题 #
+    t = re.sub(r"\*\*([^*\n]+)\*\*", r"\1", t)                # **粗体**
+    t = re.sub(r"__([^_\n]+)__", r"\1", t)                    # __粗体__
+    t = re.sub(r"~~([^~\n]+)~~", r"\1", t)                    # ~~删除线~~
+    t = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", t)            # [文字](链接)
+    t = re.sub(r"https?://\S+", "网址", t)                    # URL
+    t = re.sub(r"[\w.+-]+@[\w-]+\.[\w.-]+", "邮箱", t)        # 邮箱
+    t = re.sub(r"^[\s]*[-*+]\s+", "", t, flags=re.M)         # - 列表项
+    t = re.sub(r"^\s*\d+[.、)]\s+", "", t, flags=re.M)       # 1. 有序列表
+    # 删除白名单之外的字符（特殊符号/emoji 等）；弯引号 “”‘’ 是中文常用标点，保留
+    t = re.sub(
+        r"[^\u4e00-\u9fffA-Za-z0-9，。！？、；：\"\"''“”‘’（）《》…—·,.!?%+\s]",
         "", t,
     )
-    t = _re.sub(r"\s+", " ", t).strip()
+    t = re.sub(r"\s+", " ", t).strip()
     return t
 
 
@@ -366,10 +383,34 @@ def _crossfade_join(pieces, sr, fade=0.12):
     return out
 
 
+def _clamp_speed(value):
+    """语速钳制到安全区间：引擎实测合理范围约 0.6~1.65，这里放宽到 0.1~3.0 挡住极端值。"""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):  # noqa: BLE001
+        return 1.0
+    return min(max(v, 0.1), 3.0)
+
+
+def _synth_validated(character, text, speed, top_k, top_p, temperature, sample_steps):
+    """两条合成入口（网页 /tts 与 OpenAI /v1/audio/speech）共用的清洗+合成流程。
+    文本清洗、语速钳制、串行合成都收敛在这里，保证两条入口行为一致；
+    入口各自只负责自己的前置校验（非空/字数上限/角色存在）与 404 报错文案。
+    返回 (audio_np, sr)。"""
+    cleaned = _clean_text_for_tts(text)
+    if not cleaned:
+        raise HTTPException(400, "去掉链接/代码/特殊符号后没有可合成的文字，请换一段普通文字")
+    speed = _clamp_speed(speed)
+    logger.info("合成文字(%d字) 角色=%s: %s", len(cleaned), character, cleaned[:40])
+    with _synth_lock:
+        return _synth_chunks(
+            character, cleaned, top_k, top_p, temperature, speed, sample_steps=sample_steps)
+
+
 # ---------------- FastAPI 服务 ----------------
 from fastapi import FastAPI, Form, HTTPException, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import FileResponse, HTMLResponse, Response  # noqa: E402
+from fastapi.responses import HTMLResponse, Response  # noqa: E402
 
 app = FastAPI(title="文字驱动语音（GPT-SoVITS TTS）")
 
@@ -393,6 +434,7 @@ INDEX_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <title>文字驱动语音</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔊</text></svg>">
 <style>
 body{font-family:"Microsoft YaHei",sans-serif;max-width:820px;margin:24px auto;padding:0 16px;color:#222}
 h1{border-bottom:2px solid #1e6fb3;padding-bottom:8px}
@@ -402,32 +444,47 @@ textarea{width:100%;min-height:100px;font-size:16px;padding:8px;box-sizing:borde
 select{padding:6px;width:200px}
 button{background:#1e6fb3;color:#fff;border:none;padding:10px 26px;border-radius:6px;font-size:16px;cursor:pointer;margin-top:12px}
 button:disabled{background:#aaa}
+button.mini{padding:5px 14px;font-size:13px;margin-top:0}
+button.danger{background:#c0392b}
 .msg{margin-top:10px;font-size:14px}
-.ok{color:#27ae60}.err{color:#c0392b}
+.ok{color:#27ae60}.err{color:#c0392b}.dim{color:#888;font-size:13px}
 table{border-collapse:collapse;width:100%}
 td,th{border:1px solid #ccc;padding:6px 10px;text-align:left;font-size:14px}
+.hist{margin-top:8px;max-height:220px;overflow-y:auto}
+.hist-line{display:flex;gap:6px;align-items:center;margin:4px 0;font-size:13px}
+.hist-line button{margin:0;padding:2px 10px;font-size:12px}
 </style>
 </head>
 <body>
 <h1>文字驱动语音</h1>
 <div class="card">
-  <label>输入文字（最多 1000 字）</label>
-  <textarea id="text" placeholder="例如：大家好，我是雷军。"></textarea>
+  <label>输入文字（<span id="cnt">0/1000</span>，Ctrl+Enter 直接合成）</label>
+  <textarea id="text" maxlength="1000" placeholder="例如：大家好，我是雷军。"></textarea>
   <label>声音角色</label>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
     <select id="character"></select>
-    <button id="btnDel" style="background:#c0392b;margin-top:0;padding:6px 14px;font-size:13px">🗑 删除角色</button>
+    <button id="btnDel" class="mini danger">🗑 删除角色</button>
   </div>
   <label style="display:flex;align-items:center;gap:6px;font-weight:normal;font-size:13px">
     <input type="checkbox" id="multiCache" style="width:auto">缓存多个角色模型（默认只缓存 1 个，切换音色时自动释放上一个，省显存）
   </label>
-  <label>语速：<span id="speed_v">1.0</span></label>
-  <input type="range" id="speed" min="0.8" max="1.2" step="0.05" value="1.0" oninput="document.getElementById('speed_v').textContent=this.value">
+  <div id="cacheInfo" class="dim">显存缓存：读取中…</div>
+  <label>语速：<span id="speed_v">1.0</span>（0.6 ~ 1.65）</label>
+  <input type="range" id="speed" min="0.6" max="1.65" step="0.05" value="1.0" oninput="document.getElementById('speed_v').textContent=this.value">
   <br>
-  <button id="btn">开始合成</button>
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <button id="btn">▶ 开始合成</button>
+    <button id="btnFree" class="mini" title="清空已加载的角色模型，释放显存">释放显存</button>
+    <button id="btnReset" class="mini danger" title="页面/服务卡住时用：重启服务进程，约 10 秒自动恢复">♻ 重置服务</button>
+  </div>
   <div id="msg" class="msg"></div>
   <div id="result" style="display:none;margin-top:10px">
     <audio id="player" controls style="width:100%"></audio>
+    <div style="margin-top:6px"><button id="btnDl" class="mini">⬇ 下载本次音频</button></div>
+  </div>
+  <div id="histWrap" style="display:none;margin-top:16px">
+    <b style="font-size:14px">合成历史（本页最近 10 条，刷新页面即清空）</b>
+    <div id="hist" class="hist"></div>
   </div>
 </div>
 <div class="card">
@@ -435,13 +492,79 @@ td,th{border:1px solid #ccc;padding:6px 10px;text-align:left;font-size:14px}
   <table><tr><th>角色</th><th>状态</th></tr><tbody id="models"></tbody></table>
 </div>
 <script>
+const $ = id => document.getElementById(id);
+const textEl = $('text');
+let MAX_CHARS = 1000;   // 服务就绪后会用 /health 返回的上限覆盖
+let hist = [];          // 试听历史：{url, name, role, chars, time}
+let curItem = null;     // 播放器当前对应的条目
+
+function pad(n){ return n < 10 ? '0' + n : '' + n; }
+function nowTime(){ const d = new Date(); return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); }
+function updateCnt(){
+  if (textEl.value.length > MAX_CHARS) textEl.value = textEl.value.slice(0, MAX_CHARS);
+  $('cnt').textContent = textEl.value.length + '/' + MAX_CHARS;
+}
+textEl.addEventListener('input', () => { updateCnt(); saveState(); });
+textEl.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') $('btn').click(); });
+// 记住上次输入（文字/语速/角色），刷新或重开页面不丢
+let savedRole = '';
+function saveState(){
+  try{
+    localStorage.setItem('wzd_tts_state', JSON.stringify({text: textEl.value, speed: $('speed').value, role: $('character').value}));
+  }catch(e){ /* 隐私模式等场景下不可用，忽略 */ }
+}
+try{
+  const saved = JSON.parse(localStorage.getItem('wzd_tts_state') || '{}');
+  if (saved.text){ textEl.value = String(saved.text).slice(0, MAX_CHARS); }
+  if (saved.speed){ $('speed').value = saved.speed; $('speed_v').textContent = saved.speed; }
+  savedRole = saved.role || '';
+}catch(e){}
+$('speed').addEventListener('input', saveState);
+$('character').addEventListener('change', saveState);
+updateCnt();
+
+function download(it){
+  const a = document.createElement('a');
+  a.href = it.url; a.download = it.name;
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function playItem(it){
+  $('player').src = it.url;
+  $('result').style.display = 'block';
+  $('btnDl').onclick = () => download(it);
+  curItem = it;
+  $('player').play().catch(()=>{ /* 浏览器拦截自动播放时不报错，用户可手动点播放 */ });
+}
+function renderHist(){
+  const w = $('histWrap'), h = $('hist');
+  if (!hist.length){ w.style.display = 'none'; return; }
+  w.style.display = 'block';
+  h.innerHTML = '';
+  hist.forEach(it => {
+    const line = document.createElement('div'); line.className = 'hist-line';
+    const b1 = document.createElement('button'); b1.textContent = '▶ 试听'; b1.onclick = () => playItem(it);
+    const b2 = document.createElement('button'); b2.textContent = '⬇ 下载'; b2.onclick = () => download(it);
+    const s = document.createElement('span'); s.className = 'dim';
+    s.textContent = it.time + ' · ' + it.role + ' · ' + it.chars + '字';
+    line.appendChild(b1); line.appendChild(b2); line.appendChild(s);
+    h.appendChild(line);
+  });
+}
+
+async function refreshCacheInfo(){
+  try{
+    const j = await (await fetch('/api/cache_status')).json();
+    $('cacheInfo').textContent = '显存缓存：' + ((j.cached_roles && j.cached_roles.length) ? j.cached_roles.join('、') : '（空，首次合成该角色需加载模型）');
+  }catch(e){ /* 服务未就绪忽略 */ }
+}
+
 async function loadModels(){
   try {
     const j = await (await fetch('/models')).json();
-    const sel = document.getElementById('character');
-    const prev = sel.value;  // 记住用户当前选中的角色，刷新后保持，不跳回第一个
+    const sel = $('character');
+    const prev = sel.value || savedRole;  // 保持当前选中；首次载入恢复上次使用的角色
     sel.innerHTML = '';
-    document.getElementById('models').innerHTML = j.models.map(m=>{
+    $('models').innerHTML = j.models.map(m=>{
       if (m.ready){
         const o = document.createElement('option'); o.value = m.name; o.textContent = m.name; sel.appendChild(o);
         return '<tr><td>'+m.name+'</td><td class="ok">可用</td></tr>';
@@ -449,34 +572,55 @@ async function loadModels(){
       return '<tr><td>'+m.name+'</td><td class="err">缺文件：'+(m.missing||[]).join('、')+'</td></tr>';
     }).join('');
     if (prev && sel.querySelector('option[value="'+prev+'"]')) sel.value = prev;
-    const msg = document.getElementById('msg');
+    const msg = $('msg');
     if (msg && msg.textContent.indexOf('无法连接服务') !== -1){ msg.textContent=''; msg.className='msg'; }
+    refreshCacheInfo();
   } catch(e){
     // 服务未就绪：明确提示，避免误以为角色被删除
-    const msg = document.getElementById('msg');
+    const msg = $('msg');
     if (msg && msg.textContent.indexOf('合成') === -1){
       msg.className='msg err';
       msg.textContent='⚠ 无法连接服务：服务可能正在启动（首次加载约 5-10 分钟）或已停止。若长时间无响应，请到文字驱动项目目录（wenziqudong）双击「一键启动文字驱动语音.bat」启动。';
     }
   }
 }
-document.getElementById('btn').addEventListener('click', async ()=>{
-  const text = document.getElementById('text').value.trim();
-  const msg = document.getElementById('msg');
+
+$('btn').addEventListener('click', async ()=>{
+  const text = textEl.value.trim();
+  const msg = $('msg');
   if (!text){ msg.className='msg err'; msg.textContent='请先输入文字'; return; }
-  const btn = document.getElementById('btn'); btn.disabled = true;
-  msg.className='msg'; msg.textContent='合成中（首次使用该角色需加载模型，请稍候）…';
+  if (text.length > MAX_CHARS){ msg.className='msg err'; msg.textContent='文字超过 '+MAX_CHARS+' 字，请分段合成'; return; }
+  const btn = $('btn'); btn.disabled = true;
+  msg.className='msg';
+  const t0 = Date.now();
+  const longHint = text.length > 200 ? '长文本合成较慢，请耐心等待' : '首次使用该角色需加载模型，请稍候';
+  msg.textContent='合成中…（' + longHint + '）';
+  const timer = setInterval(()=>{ msg.textContent='合成中… 已用 ' + Math.round((Date.now()-t0)/1000) + ' 秒（' + longHint + '）'; }, 1000);
   try{
     const fd = new FormData();
     fd.append('text', text);
-    fd.append('character', document.getElementById('character').value);
-    fd.append('speed', document.getElementById('speed').value);
+    fd.append('character', $('character').value);
+    fd.append('speed', $('speed').value);
     const r = await fetch('/tts', {method:'POST', body: fd});
     if (!r.ok){ const j = await r.json().catch(()=>({})); throw new Error(j.detail || r.statusText); }
     const url = URL.createObjectURL(await r.blob());
-    document.getElementById('player').src = url;
-    document.getElementById('result').style.display = 'block';
-    msg.className='msg ok'; msg.textContent='合成完成';
+    const d = new Date();
+    const it = {
+      url: url,
+      role: $('character').value,
+      chars: text.length,
+      time: nowTime(),
+      name: 'tts_' + $('character').value + '_' + d.getFullYear() + pad(d.getMonth()+1) + pad(d.getDate()) + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + '.wav'
+    };
+    hist.unshift(it);
+    while (hist.length > 10){
+      const old = hist.pop();
+      if (old !== curItem) URL.revokeObjectURL(old.url);  // 正在播放的不回收
+    }
+    renderHist();
+    playItem(it);   // 合成完自动播放
+    msg.className='msg ok'; msg.textContent='合成完成（' + it.time + '）';
+    refreshCacheInfo();
   }catch(e){
     const netErr = /Failed to fetch|NetworkError|Load failed|ECONNREFUSED|fetch failed|ERR_CONNECTION/i.test(String((e && e.message) || e));
     msg.className='msg err';
@@ -484,11 +628,12 @@ document.getElementById('btn').addEventListener('click', async ()=>{
       ? '无法连接服务：服务可能正在启动（首次加载模型约 5-10 分钟）或已停止。请稍候刷新页面重试；若长时间无响应，请到文字驱动项目目录（wenziqudong）双击「一键启动文字驱动语音.bat」启动。'
       : '合成失败：'+e.message;
   }
-  finally{ btn.disabled = false; }
+  finally{ clearInterval(timer); btn.disabled = false; }
 });
-document.getElementById('btnDel').addEventListener('click', async ()=>{
-  const name = document.getElementById('character').value;
-  const msg = document.getElementById('msg');
+
+$('btnDel').addEventListener('click', async ()=>{
+  const name = $('character').value;
+  const msg = $('msg');
   if (!name){ msg.className='msg err'; msg.textContent='请先选择要删除的角色'; return; }
   if (!confirm('确定删除角色「'+name+'」？\\n\\n将永久删除本地模型文件（ckpt / pth / ref.wav / ref_text.txt），不可恢复！\\n删除后训练中心需重新训练才能找回。')) return;
   const typed = prompt('防误删：请输入角色名「'+name+'」以确认删除：');
@@ -504,22 +649,60 @@ document.getElementById('btnDel').addEventListener('click', async ()=>{
     msg.className='msg err'; msg.textContent='删除失败：'+e.message;
   }
 });
+
+// 释放显存：清空已加载的角色模型（下次合成需重新加载）
+$('btnFree').addEventListener('click', async ()=>{
+  const msg = $('msg');
+  try{
+    const r = await fetch('/api/free_memory', {method:'POST'});
+    const j = await r.json().catch(()=>({}));
+    msg.className='msg ok'; msg.textContent = j.message || '已释放显存';
+    refreshCacheInfo();
+  }catch(e){
+    msg.className='msg err'; msg.textContent='释放显存失败：'+e.message;
+  }
+});
+
+// 一键重置：服务卡住时重启进程，看门狗 3 秒拉起，约 10 秒恢复
+$('btnReset').addEventListener('click', async ()=>{
+  if (!confirm('确定重置服务？\\n\\n服务进程将重启（看门狗自动拉起），约 10 秒后恢复，期间无法合成。')) return;
+  const msg = $('msg');
+  const waiting = '服务重置中，约 10 秒后自动恢复（本页无需刷新）…';
+  try{
+    const r = await fetch('/api/reset', {method:'POST'});
+    const j = await r.json().catch(()=>({}));
+    if (!r.ok){ msg.className='msg err'; msg.textContent='无法重置：'+(j.detail || r.statusText); return; }
+    msg.className='msg'; msg.textContent=waiting;
+  }catch(e){
+    // 重置成功时进程退出瞬间请求可能断开，属正常；若服务彻底无响应，页面 10 秒轮询会提示
+    msg.className='msg'; msg.textContent=waiting;
+  }
+});
+
 loadModels();
 // 缓存策略：默认单角色（切换时自动释放上一个）；勾选多角色缓存
 (async function(){
   try{
     const j = await (await fetch('/api/cache_mode')).json();
-    document.getElementById('multiCache').checked = !!j.multi;
+    $('multiCache').checked = !!j.multi;
   }catch(e){ /* 服务未就绪忽略 */ }
 })();
-document.getElementById('multiCache').addEventListener('change', async ()=>{
+// 从 /health 读取字数上限与采样配置，保持前后端一致
+(async function(){
+  try{
+    const j = await (await fetch('/health')).json();
+    if (j.max_chars){ MAX_CHARS = j.max_chars; textEl.maxLength = MAX_CHARS; updateCnt(); }
+  }catch(e){ /* 服务未就绪时用默认 1000 */ }
+})();
+$('multiCache').addEventListener('change', async ()=>{
   const fd = new FormData();
-  fd.append('multi', document.getElementById('multiCache').checked ? '1' : '0');
-  const msg = document.getElementById('msg');
+  fd.append('multi', $('multiCache').checked ? '1' : '0');
+  const msg = $('msg');
   try{
     const r = await fetch('/api/cache_mode', {method:'POST', body: fd});
     const j = await r.json().catch(()=>({}));
     if (j.message){ msg.className='msg'; msg.textContent = j.message; }
+    refreshCacheInfo();
   }catch(e){
     msg.className='msg err'; msg.textContent='设置缓存模式失败：'+e.message;
   }
@@ -546,6 +729,8 @@ def health():
         "device": "cuda:0" if torch.cuda.is_available() else "cpu",
         "infer_device": TTS_DEVICE,
         "ready_roles": READY_ROLES,
+        "max_chars": TTS_MAX_CHARS,
+        "sample_steps": TTS_SAMPLE_STEPS,
     }
 
 
@@ -571,28 +756,31 @@ def tts(
     top_k: int = Form(12),
     top_p: float = Form(0.9),
     temperature: float = Form(0.7),
-    sample_steps: int = Form(32),
+    sample_steps: int = Form(TTS_SAMPLE_STEPS),
 ):
     text = (text or "").strip()
     if not text:
         raise HTTPException(400, "text 不能为空")
-    if len(text) > 1000:
-        raise HTTPException(400, "text 最长 1000 字")
+    if len(text) > TTS_MAX_CHARS:
+        raise HTTPException(400, "text 最长 %d 字" % TTS_MAX_CHARS)
     if not CHARACTER_RE.match(character or ""):
         raise HTTPException(400, "character 名称不合法")
     refresh_roles()
     if character not in ROLES or not ROLES[character]["ready"]:
         raise HTTPException(404, "角色不可用: %s（可用角色见 GET /models）" % character)
     try:
-        logger.info("合成文字(%d字) 角色=%s: %s", len(text), character, text[:40])
-        with _synth_lock:
-            audio_np, sr = _synth_chunks(
-                character, text, top_k, top_p, temperature, speed, sample_steps=sample_steps)
+        audio_np, sr = _synth_validated(
+            character, text, speed, top_k, top_p, temperature, sample_steps)
         if len(audio_np) == 0:
             raise HTTPException(500, "合成结果为空")
-        out_wav = os.path.join(TMP_ROOT, "tts_%s.wav" % uuid.uuid4().hex)
-        sf.write(out_wav, audio_np, sr)
-        return FileResponse(out_wav, media_type="audio/wav", filename="tts_%s.wav" % character)
+        # 内存直出，不再写临时文件（历史版本每个请求落盘一个 wav 且从不清理，会堆满磁盘）
+        buf = io.BytesIO()
+        sf.write(buf, audio_np, sr, format="WAV")
+        return Response(
+            content=buf.getvalue(),
+            media_type="audio/wav",
+            headers={"Content-Disposition": 'inline; filename="tts.wav"'},
+        )
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -611,12 +799,37 @@ def free_memory():
             torch.cuda.empty_cache()
         except Exception:  # noqa: BLE001
             pass
-    return {"message": "已清空模型缓存并释放显存（下次合成需重新加载模型，约20秒）"}
+    return {"message": "已清空模型缓存并释放显存（下次合成需重新加载模型，约 1-2 分钟）"}
+
+
+def _watchdog_alive():
+    """检查服务是否被看门狗托管。True=在托管；False=确认没托管；
+    None=无法判断（如没装 psutil，按托管处理，不阻断重置）。"""
+    try:
+        with open(os.path.join(TMP_ROOT, "tts_watchdog.pid"), encoding="utf-8-sig") as f:
+            wd_pid = int(json.load(f).get("watchdog") or 0)
+    except Exception:  # noqa: BLE001
+        return False  # 没有 pid 文件 = 看门狗没在跑
+    try:
+        import psutil
+        p = psutil.Process(wd_pid)
+        return p.is_running() and "powershell" in (p.name() or "").lower()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 @app.post("/api/reset")
 def reset():
-    """卡住时一键重置：1 秒后退出进程，由启动脚本看门狗自动重启。"""
+    """卡住时一键重置：1 秒后退出进程，由启动脚本看门狗自动重启。
+    若服务不是看门狗托管的（如手动 python 启动、看门狗已死），退出将无法自动恢复，
+    此时拒绝重置并提示改用 stop.bat + start.bat。"""
+    if _watchdog_alive() is False:
+        raise HTTPException(
+            409,
+            "当前服务未由看门狗托管，重置后将不会自动重启。"
+            "请双击 stop.bat 停止后再双击 start.bat 启动（恢复看门狗托管）。",
+        )
+
     def _do():
         time.sleep(1)
         os._exit(0)
@@ -689,7 +902,6 @@ def delete_role(character: str = Form("")):
             gpt_api.speaker_list.pop("default", None)
     # 2) 删除本地模型目录
     try:
-        import shutil
         shutil.rmtree(role_dir, ignore_errors=True)
     except Exception as exc:  # noqa: BLE001
         logger.exception("删除角色目录失败: %s", role_dir)
@@ -727,8 +939,8 @@ async def openai_compat_speech(request: Request):
     text = (payload.get("input") or "").strip()
     if not text:
         raise HTTPException(400, "input 不能为空")
-    if len(text) > 1000:
-        raise HTTPException(400, "text 最长 1000 字")
+    if len(text) > TTS_MAX_CHARS:
+        raise HTTPException(400, "input 最长 %d 字" % TTS_MAX_CHARS)
     character = (payload.get("voice") or payload.get("model") or "").strip()
     # light-avatar 数字人素材库（voice 前缀 avatar:）：不合成音色，
     # 画面由前端显示，音频用默认训练音色合成
@@ -739,10 +951,7 @@ async def openai_compat_speech(request: Request):
     refresh_roles()
     if character not in ROLES or not ROLES[character]["ready"]:
         raise HTTPException(404, "角色不可用: %s（可用角色见 GET /v1/audio/voices）" % character)
-    try:
-        speed = float(payload.get("speed") or 1.0)
-    except (TypeError, ValueError):  # noqa: BLE001
-        speed = 1.0
+    speed = _clamp_speed(payload.get("speed"))
     # 采样参数：Open WebUI 等外部系统一般不传，用保守默认值（top_k=12/top_p=0.9/
     # temperature=0.7）。GPT-SoVITS 默认 1.0 对部分音色（如 fengyanlin）采样过激，
     # 会导致整句丢 token 漏字；保守参数对所有音色更稳。
@@ -754,8 +963,8 @@ async def openai_compat_speech(request: Request):
         top_k, top_p, temperature = 12, 0.9, 0.7
     try:
         logger.info("OpenAI兼容合成(%d字) 角色=%s: %s", len(text), character, text[:40])
-        with _synth_lock:
-            audio_np, sr = _synth_chunks(character, text, top_k, top_p, temperature, speed, sample_steps=TTS_SAMPLE_STEPS)
+        audio_np, sr = _synth_validated(
+            character, text, speed, top_k, top_p, temperature, TTS_SAMPLE_STEPS)
         if len(audio_np) == 0:
             raise HTTPException(500, "合成结果为空")
         mp3 = _wav_to_mp3(audio_np, sr)
@@ -772,30 +981,31 @@ async def openai_compat_speech(request: Request):
         raise HTTPException(500, "合成失败: %s" % exc)
 
 
+_ffmpeg_path = None  # 缓存定位结果（None=还没找过，""=找不到）
+
+
+def _find_ffmpeg():
+    """定位 ffmpeg：环境变量 FFMPEG_PATH → 项目内置 runtime\ffmpeg → PATH。找不到返回空串。"""
+    candidates = [
+        os.environ.get("FFMPEG_PATH", ""),
+        os.path.join(PROJECT_ROOT, "runtime", "ffmpeg", "bin", "ffmpeg.exe"),
+        os.path.join(PROJECT_ROOT, "runtime", "ffmpeg", "bin", "ffmpeg"),
+    ]
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return c
+    return shutil.which("ffmpeg") or ""
+
+
 def _wav_to_mp3(audio_np, sr):
     """用 ffmpeg 把合成音频转成 mp3 字节；失败返回 None（调用方回退 wav）。
     优先用项目内置 ffmpeg（runtime\ffmpeg）。"""
+    global _ffmpeg_path
     try:
         import subprocess
-        candidates = [
-            os.environ.get("FFMPEG_PATH", ""),
-            os.path.join(PROJECT_ROOT, "runtime", "ffmpeg", "bin", "ffmpeg.exe"),
-            os.path.join(PROJECT_ROOT, "runtime", "ffmpeg", "bin", "ffmpeg"),
-            "ffmpeg",
-        ]
-        ffmpeg = None
-        for c in candidates:
-            if not c:
-                continue
-            if c == "ffmpeg":
-                # PATH 查找
-                import shutil as _sh
-                if _sh.which("ffmpeg"):
-                    ffmpeg = "ffmpeg"
-                    break
-            elif os.path.isfile(c):
-                ffmpeg = c
-                break
+        if _ffmpeg_path is None:
+            _ffmpeg_path = _find_ffmpeg()
+        ffmpeg = _ffmpeg_path or None
         if not ffmpeg:
             return None
         buf_in = io.BytesIO()

@@ -17,7 +17,6 @@ echo.
 if %MISSING%==0 (
   echo ALL big assets present. Run start.bat now.
 ) else (
-  echo Some big assets missing. See DEPLOY.md (top section
-  "Deployment guarantee") for download instructions.
+  echo Some big assets missing. See DEPLOY.md top section for download instructions.
 )
 pause
