@@ -33,7 +33,7 @@
 - 🚀 **缓存策略可选**：默认「单角色缓存」（切换音色自动释放上一个，省显存）；页面勾选可开「多角色缓存」，当前缓存角色实时可见
 - 🧰 **网页内服务维护**：一键「释放显存」、「重置服务」（卡住时重启进程，看门狗自动拉起），不用敲命令
 - 🔌 **OpenAI 兼容接口**：`/v1/audio/speech`（mp3）、`/v1/audio/voices`、`/v1/models`，供 Open WebUI 等外部系统直接调用
-- 🛡️ **看门狗自愈**：服务异常退出 3 秒自动重启；一键启动防重复双击；一键停止彻底干净
+- 🛡️ **看门狗自愈**：服务在前台黑框窗口运行、日志实时滚动；异常退出 3 秒自动重启；**关闭窗口 = 服务彻底结束，立即释放显卡与内存**（Windows Job 对象保证，不留孤儿进程）；一键启动防重复双击；stop.bat 一键停止
 - ✂️ **长文本稳合成**：自动清洗 markdown/URL/特殊符号，20 字阈值分句 + 交叉淡化拼接，减少漏字跳读；无标点长文、末尾无标点的句子也不会丢字；合成音频内存直出，不在磁盘堆临时文件
 
 ## 🗂️ 目录结构
@@ -129,7 +129,7 @@ curl -X POST -H "Content-Type: application/json" -d "{\"model\":\"liejun\",\"inp
 
 ## ❓ 常见问题（FAQ）
 
-- **Q：双击启动没反应 / 页面打不开？** A：首次加载 torch 与模型约需 5–10 分钟，期间 `/health` 不通属正常；看门狗日志在 `tts_service\tmp\tts_python.log.err`，可查看是否缺引擎/模型（先按 DEPLOY.md 摆好 `gptsovits\GPT-SoVITS` 与音色模型）。
+- **Q：双击启动没反应 / 页面打不开？** A：首次加载 torch 与模型约需 5–10 分钟，期间 `/health` 不通属正常；服务与看门狗日志在 `tts_service\tmp\`（`tts_python.log` / `tts_watchdog.log`），可查看是否缺引擎/模型（先按 DEPLOY.md 摆好 `gptsovits\GPT-SoVITS` 与音色模型）。
 - **Q：下拉框没有角色 / 角色显示「缺文件」？** A：每个角色目录必须 4 件齐全（`<名>.ckpt`、`<名>.pth`、`ref.wav`、`ref_text.txt`），目录放进 `tts_service\models\` 后 `GET /models` 即热刷新，无需重启。
 - **Q：合成漏字 / 跳读？** A：多为参考音频问题：`ref.wav` 建议 3–10 秒干净人声，`ref_text.txt` 必须与音频内容一字不差。本服务已默认保守采样参数（top_k 12 / top_p 0.9 / temperature 0.7）+ 20 字分句，可大幅缓解。
 - **Q：`Failed to fetch`？** A：服务未就绪或已停止。等就绪后刷新页面；或到项目目录双击「一键启动文字驱动语音.bat」。

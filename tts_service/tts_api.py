@@ -38,7 +38,7 @@ GSV_ROOT = os.environ.get("GSV_ROOT") or os.path.join(PROJECT_ROOT, "gptsovits",
 # 解耦：模型直接发布到本项目的模型目录（训练中心-文字驱动模式发布到这里），本服务自己读自己的模型
 GSV_MODELS_DIR = os.environ.get("GSV_MODELS_DIR", os.path.join(SCRIPT_DIR, "models"))
 API_PORT = int(os.environ.get("TTS_API_PORT", "8060"))
-# 推理设备：cuda（默认，需显卡）或 cpu（不吃显存，适合 8G 显卡与 LLM 同机跑）
+# 推理设备：cuda（默认，NVIDIA 显卡加速）或 cpu（不占显卡/无 GPU 时可用）
 TTS_DEVICE = (os.environ.get("TTS_DEVICE", "cuda") or "cuda").strip().lower()
 if TTS_DEVICE not in ("cuda", "cpu"):
     TTS_DEVICE = "cuda"
@@ -62,6 +62,57 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("wenziqudong_tts")
+
+# 服务日志双写：控制台（看门狗黑框窗口实时可见）+ tmp\tts_python.log（重启后排查用，每次启动覆盖）。
+# stdout/stderr（引擎 print、tqdm 进度条）通过 _Tee 一并进文件；uvicorn 日志在
+# 启动时用 log_config=None 关掉自带配置，统一走 root handler。
+_tts_log_path = os.path.join(TMP_ROOT, "tts_python.log")
+try:
+    _logf = open(_tts_log_path, "w", encoding="utf-8", errors="replace")
+    _fh = logging.StreamHandler(_logf)
+    _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logging.getLogger().addHandler(_fh)
+    for _n in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        logging.getLogger(_n).addHandler(_fh)
+except Exception:  # noqa: BLE001
+    _logf = None
+
+
+class _Tee(object):
+    """把控制台输出同步写一份到日志文件。"""
+
+    def __init__(self, console, file):
+        self._console, self._file = console, file
+
+    def write(self, s):
+        try:
+            self._console.write(s)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self._file.write(s)
+            self._file.flush()
+        except Exception:  # noqa: BLE001
+            pass
+        return len(s)
+
+    def flush(self):
+        for st in (self._console, self._file):
+            try:
+                st.flush()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def isatty(self):
+        return False
+
+
+try:
+    if _logf is not None:
+        sys.stdout = _Tee(sys.stdout, _logf)
+        sys.stderr = _Tee(sys.stderr, _logf)
+except Exception:  # noqa: BLE001
+    pass
 
 
 def _cleanup_stale_wavs():
@@ -1069,4 +1120,5 @@ threading.Thread(target=_startup_warmup, daemon=True).start()
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=API_PORT, workers=1)
+    # log_config=None：不套用 uvicorn 自带日志配置，让访问日志也走上面的双写（控制台+文件）
+    uvicorn.run(app, host="0.0.0.0", port=API_PORT, workers=1, log_config=None)

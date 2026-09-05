@@ -43,9 +43,10 @@ echo Starting service...
 powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -match 'tts_api' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 if exist "%PIDFILE%" del /f /q "%PIDFILE%"
 
-rem ---------- 4) launch watchdog (minimized, auto-restart on crash) ----------
-echo Starting watchdog (auto-restart on crash, 3s delay)...
-start "" /min powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%tts_service\tts_watchdog.ps1"
+rem ---------- 4) launch watchdog in a visible console window ----------
+rem The window shows live service logs; closing that window stops the service.
+echo Opening the service window (live logs there; closing it stops the service)...
+start "WenZiQuDong TTS" powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%tts_service\tts_watchdog.ps1"
 
 rem ---------- 5) wait until service is ready, then open browser ----------
 echo.
@@ -63,7 +64,7 @@ goto waitloop
 echo  Service is ready.
 echo    UI      : http://127.0.0.1:8060/
 echo    health  : http://127.0.0.1:8060/health
-echo    stop    : run stop.bat
+echo    stop    : run stop.bat (or just close the service window)
 timeout /t 2 >nul 2>nul
 start "" "http://127.0.0.1:8060/"
 exit /b 0

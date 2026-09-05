@@ -1,20 +1,23 @@
 ﻿# ============================================================
-# 文字驱动语音服务 看门狗（由 一键启动文字驱动语音.bat 调用）
+# 文字驱动语音服务 看门狗（由 start.bat 调用，前台控制台窗口运行）
 # 功能：
-#   1. 启动 tts_api.py（继承 bat 设置的 TTS_DEVICE 环境）
+#   1. 在本窗口前台启动 tts_api.py：服务运行日志实时显示在本窗口
+#      （文件日志由 tts_api.py 自己双写 tmp\tts_python.log，每次启动覆盖）
 #   2. 写 pid 文件 tts_service\tmp\tts_watchdog.pid：
-#      { watchdog: 看门狗自身PID, python: 当前服务PID, started: 启动时间 }
-#      - 供关闭脚本定位进程，供启动脚本判断"是否已在启动"
-#   3. python 异常退出后 3 秒自动重启；连续 3 次 30 秒内快速退出则
-#      退出看门狗（避免死循环，常见原因是 8060 被占用）
+#      { watchdog: 看门狗PID, python: 服务PID, started: 启动时间 }
+#   3. python 异常退出后 3 秒自动重启；连续 3 次 30 秒内快速退出
+#      则退出看门狗（避免死循环，常见原因是 8060 被占用）
+#   4. **关闭本窗口 = 看门狗 + 服务一起结束**：python 被 Windows Job
+#      对象托管（KILL_ON_JOB_CLOSE），看门狗进程一死，内核立即终止
+#      python 并释放显卡/内存，不会留下孤儿进程
 # 完全自包含：运行时/ffmpeg 均为项目内置（runtime\py312 / runtime\ffmpeg）
 # ============================================================
 $ErrorActionPreference = 'Continue'
+try { $Host.UI.RawUI.WindowTitle = 'WenZiQuDong 文字驱动语音 - 关闭此窗口即停止服务' } catch {}
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root      = Split-Path -Parent $scriptDir
 # 运行时/ffmpeg 均为项目内置（完全自包含，随项目复制即用）
-$hsRoot    = $root
 $py        = Join-Path (Join-Path $root 'runtime\py312') 'python.exe'
 $api       = Join-Path $scriptDir 'tts_api.py'
 $pidFile   = Join-Path $scriptDir 'tmp\tts_watchdog.pid'
@@ -24,52 +27,71 @@ New-Item -ItemType Directory -Force -Path (Split-Path $pidFile) | Out-Null
 # 与一键启动 bat 保持一致：ffmpeg 进 PATH（项目内置）
 $env:PATH = "$root\runtime\ffmpeg\bin;$env:PATH"
 
+# Windows Job 对象：看门狗进程退出时内核自动终止其中所有进程（含 python 及其子进程）
+if (-not ('WzdJob' -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class WzdJob {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr CreateJobW(IntPtr attrs, uint flags);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool AssignProcessToJobObject(IntPtr job, IntPtr proc);
+}
+"@
+}
+# 0x2000 = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+$wzdJob = [WzdJob]::CreateJobW([IntPtr]::Zero, 0x2000)
+if ($wzdJob -eq [IntPtr]::Zero) {
+    Write-Warning "创建 Job 对象失败（errno=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())），关闭窗口可能残留 python 进程"
+}
+
 function Write-Log([string]$m) {
-    # 日志封顶 1MB：超过则只留最后 200 行，防止无限增长
+    # 看门狗日志封顶 1MB：超过则只留最后 200 行，防止无限增长
     if ((Test-Path $logFile) -and ((Get-Item $logFile).Length -gt 1MB)) {
         $tail = Get-Content $logFile -Tail 200 -ErrorAction SilentlyContinue
         Set-Content -Path $logFile -Value $tail -Encoding UTF8
     }
-    Add-Content -Path $logFile -Value ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + " " + $m) -Encoding UTF8
+    $line = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + " " + $m
+    Add-Content -Path $logFile -Value $line -Encoding UTF8
+    Write-Host $line
 }
 
 Write-Log "watchdog started (PID=$PID)"
+Write-Log "服务日志实时显示在本窗口；关闭本窗口 = 看门狗和服务一起停止。"
 
 $quickFail = 0
 while ($true) {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    # python stdout/stderr 重定向到日志（每次启动覆盖），崩溃/端口冲突原因可查
-    $outLog = Join-Path $scriptDir 'tmp\tts_python.log'
-    $errLog = $outLog + '.err'
-    Remove-Item $outLog, $errLog -Force -ErrorAction SilentlyContinue
-    $proc = Start-Process -FilePath $py -ArgumentList "`"$api`"" -WindowStyle Minimized -PassThru `
-        -RedirectStandardOutput $outLog -RedirectStandardError $errLog
-    $info = @{
+    # -NoNewWindow：python 与看门狗共用本控制台，日志实时滚动；文件日志由 tts_api.py 双写
+    $proc = Start-Process -FilePath $py -ArgumentList @('-u', ('"' + $api + '"')) -NoNewWindow -PassThru
+    if ($wzdJob -ne [IntPtr]::Zero) {
+        try { [void][WzdJob]::AssignProcessToJobObject($wzdJob, $proc.Handle) } catch { Write-Log "job assign failed: $_" }
+    }
+    @{
         watchdog = $PID
         python   = $proc.Id
         started  = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-    }
-    $info | ConvertTo-Json | Set-Content -Path $pidFile -Encoding UTF8
-    Write-Log "service started (python PID=$($proc.Id))"
+    } | ConvertTo-Json | Set-Content -Path $pidFile -Encoding UTF8
+    Write-Log ("service started (python PID=" + $proc.Id + ")")
     $proc.WaitForExit()
     $sw.Stop()
     $code = $proc.ExitCode
-    Write-Log "service exited (code=$code, ran $([int]$sw.Elapsed.TotalSeconds)s)"
+    Write-Log ("service exited (code=" + $code + ", ran " + [int]$sw.Elapsed.TotalSeconds + "s)")
     # 把 python 最后 20 行输出写入看门狗日志，便于排查
-    if (Test-Path $errLog) {
-        $tail = (Get-Content $errLog -Tail 20 -ErrorAction SilentlyContinue) -join ' | '
-        if ($tail) { Write-Log "python stderr: $tail" }
-    }
+    $outLog = Join-Path $scriptDir 'tmp\tts_python.log'
     if (Test-Path $outLog) {
-        $tail2 = (Get-Content $outLog -Tail 5 -ErrorAction SilentlyContinue) -join ' | '
-        if ($tail2) { Write-Log "python stdout: $tail2" }
+        $tail = (Get-Content $outLog -Tail 20 -ErrorAction SilentlyContinue) -join ' | '
+        if ($tail) { Write-Log ("python 输出末尾: " + $tail) }
     }
 
     if ($sw.Elapsed.TotalSeconds -lt 30) { $quickFail++ } else { $quickFail = 0 }
     if ($quickFail -ge 3) {
-        Write-Log "3 quick failures, watchdog exits (avoid loop)"
+        Write-Log "连续 3 次快速失败，看门狗退出（常见原因：8060 端口被占用或缺少引擎/模型）。"
+        Read-Host "按回车键关闭此窗口"
         break
     }
+    Write-Log "3 秒后自动重启服务..."
     Start-Sleep -Seconds 3
 }
 Remove-Item $pidFile -Force -ErrorAction SilentlyContinue

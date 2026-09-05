@@ -21,7 +21,8 @@
 ## 3. 工作方式
 
 - 启动：双击 `start.bat` 或 `一键启动文字驱动语音.bat`（防重复双击、看门狗托管、就绪自动开浏览器）
-- 停止：双击 `stop.bat` 或 `关闭文字驱动语音.bat`（先杀看门狗再杀 python，关闭后不会自动重启）
+- 服务在前台黑框窗口运行，日志实时滚动（同时写 `tts_service\tmp\tts_python.log`，stdout/stderr 已合并且由 tts_api.py 自身双写；旧 `.err` 文件已废弃）
+- 停止：双击 `stop.bat` 或 `关闭文字驱动语音.bat`（先杀看门狗再杀 python，关闭后不会自动重启）；**直接关闭服务窗口亦可**——python 由 Windows Job 对象（KILL_ON_JOB_CLOSE）托管，看门狗一死内核立即终止服务，显卡/内存随之释放，不留孤儿进程
 - 自检：`GET /health`、`GET /models`；`python tests\test_tts_client.py` 冒烟合成
 - OpenAI 兼容端点（供 Open WebUI 等调用）：`POST /v1/audio/speech`（JSON {model, input, voice, speed} → mp3）、
   `GET /v1/audio/voices`、`GET /v1/models`
