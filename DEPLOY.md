@@ -164,8 +164,9 @@ curl -X POST -H "Content-Type: application/json" -d "{\"model\":\"liejun\",\"inp
 - **英文混排报 `Resource 'averaged_perceptron_tagger_eng' not found`**：按第 4 节补装 NLTK 资源。
 - **合成漏字/跳读**：优先检查该角色 `ref.wav` 时长（3–10 秒）与 `ref_text.txt` 是否一致；本服务默认已用保守采样参数 + 20 字分句。
 - **无 GPU 也想跑**：`set TTS_DEVICE=cpu` 后启动（不吃显存，合成稍慢）。
-- **端口冲突**：`set TTS_API_PORT=8061` 后启动；但页面与外部系统配置的地址也要跟着改。
+- **端口冲突**：8060 被其他程序占用时，start.bat 自动改用 8062~8069 中第一个空闲端口（记入 `tts_service\tmp\port.txt`，stop.bat 自动跟随；8060 空出来后下次启动自动回到 8060）。也可 `set TTS_API_PORT=xxxx` 手动指定；本副本只会清理自己启动的进程，不会动其他项目的服务。
 - **页面点「重置服务」被拒绝**：说明服务当前不是看门狗托管的（如手动 python 启动、看门狗已死），直接重置会无法自愈。按提示双击 `stop.bat` 再 `start.bat`（start.bat 启动时也会对这种状态打印 WARNING）。
+- **启动时报 CUDA out of memory / MemoryError**：显卡或系统内存被其他 AI 程序（LLM、ComfyUI、同机其他 TTS 等）暂时占满。看门狗会每 60 秒自动重试，等资源空出来即自动启动成功；也可先关掉部分程序。
 
 ## 10. 更新约定
 

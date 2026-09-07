@@ -9,7 +9,7 @@
 #      则退出看门狗（避免死循环，常见原因是 8060 被占用）
 #   4. **关闭本窗口 = 看门狗 + 服务一起结束**：python 被 Windows Job
 #      对象托管（KILL_ON_JOB_CLOSE），看门狗进程一死，内核立即终止
-#      python 并释放显卡/内存，不会留下孤儿进程
+#      python 并释放显卡/内存；tts_api.py 内另有父进程看护线程兜底
 # 完全自包含：运行时/ffmpeg 均为项目内置（runtime\py312 / runtime\ffmpeg）
 # ============================================================
 $ErrorActionPreference = 'Continue'
@@ -27,25 +27,6 @@ New-Item -ItemType Directory -Force -Path (Split-Path $pidFile) | Out-Null
 # 与一键启动 bat 保持一致：ffmpeg 进 PATH（项目内置）
 $env:PATH = "$root\runtime\ffmpeg\bin;$env:PATH"
 
-# Windows Job 对象：看门狗进程退出时内核自动终止其中所有进程（含 python 及其子进程）
-if (-not ('WzdJob' -as [type])) {
-    Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public static class WzdJob {
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern IntPtr CreateJobW(IntPtr attrs, uint flags);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool AssignProcessToJobObject(IntPtr job, IntPtr proc);
-}
-"@
-}
-# 0x2000 = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-$wzdJob = [WzdJob]::CreateJobW([IntPtr]::Zero, 0x2000)
-if ($wzdJob -eq [IntPtr]::Zero) {
-    Write-Warning "创建 Job 对象失败（errno=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())），关闭窗口可能残留 python 进程"
-}
-
 function Write-Log([string]$m) {
     # 看门狗日志封顶 1MB：超过则只留最后 200 行，防止无限增长
     if ((Test-Path $logFile) -and ((Get-Item $logFile).Length -gt 1MB)) {
@@ -57,7 +38,68 @@ function Write-Log([string]$m) {
     Write-Host $line
 }
 
-Write-Log "watchdog started (PID=$PID)"
+Write-Log "watchdog starting (PID=$PID)..."
+
+# Windows Job 对象：看门狗进程退出时内核自动终止其中所有进程（含 python 及其子进程）
+if (-not ('WzdJob' -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class WzdJob {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr CreateJobObjectW(IntPtr lpJobAttributes, string lpName);
+    [StructLayout(LayoutKind.Sequential)]
+    public struct JOBOBJECT_BASIC_LIMIT_INFORMATION {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct IO_COUNTERS {
+        public ulong ReadOperationCount;
+        public ulong WriteOperationCount;
+        public ulong OtherOperationCount;
+        public ulong ReadTransferCount;
+        public ulong WriteTransferCount;
+        public ulong OtherTransferCount;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+        public IO_COUNTERS IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryUsed;
+        public UIntPtr PeakJobMemoryUsed;
+    }
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool SetInformationJobObject(IntPtr hJob, int infoClass, ref JOBOBJECT_EXTENDED_LIMIT_INFORMATION info, int cbLen);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
+}
+"@
+}
+# 0x2000 = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE（JobObjectExtendedLimitInformation = 9）
+$wzdJob = [WzdJob]::CreateJobObjectW([IntPtr]::Zero, $null)
+if ($wzdJob -eq [IntPtr]::Zero) {
+    Write-Log ("创建 Job 对象失败 errno=" + [Runtime.InteropServices.Marshal]::GetLastWin32Error() + "（关窗口由 tts_api.py 父进程看护兜底）")
+} else {
+    $wzdJobInfo = New-Object WzdJob+JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+    $wzdJobInfo.BasicLimitInformation.LimitFlags = 0x2000
+    $wzdJobSize = [System.Runtime.InteropServices.Marshal]::SizeOf($wzdJobInfo)
+    if ([WzdJob]::SetInformationJobObject($wzdJob, 9, [ref]$wzdJobInfo, $wzdJobSize)) {
+        Write-Log ("job object OK (handle=" + $wzdJob + ")")
+    } else {
+        Write-Log ("设置 Job 限制失败 errno=" + [Runtime.InteropServices.Marshal]::GetLastWin32Error())
+    }
+}
+
 Write-Log "服务日志实时显示在本窗口；关闭本窗口 = 看门狗和服务一起停止。"
 
 $quickFail = 0
@@ -87,9 +129,10 @@ while ($true) {
 
     if ($sw.Elapsed.TotalSeconds -lt 30) { $quickFail++ } else { $quickFail = 0 }
     if ($quickFail -ge 3) {
-        Write-Log "连续 3 次快速失败，看门狗退出（常见原因：8060 端口被占用或缺少引擎/模型）。"
-        Read-Host "按回车键关闭此窗口"
-        break
+        # 连续快速失败多为显卡/内存被其它程序暂时占用，等一段再试；关闭本窗口随时可停止
+        Write-Log "连续 3 次快速失败（多为显卡/内存被其它程序暂时占用），60 秒后继续重试；关闭本窗口即可停止。"
+        Start-Sleep -Seconds 60
+        $quickFail = 0
     }
     Write-Log "3 秒后自动重启服务..."
     Start-Sleep -Seconds 3

@@ -443,7 +443,7 @@ def _clamp_speed(value):
     return min(max(v, 0.1), 3.0)
 
 
-def _synth_validated(character, text, speed, top_k, top_p, temperature, sample_steps):
+def _synth_validated(character, text, speed, top_k, top_p, temperature, sample_steps, source="web"):
     """两条合成入口（网页 /tts 与 OpenAI /v1/audio/speech）共用的清洗+合成流程。
     文本清洗、语速钳制、串行合成都收敛在这里，保证两条入口行为一致；
     入口各自只负责自己的前置校验（非空/字数上限/角色存在）与 404 报错文案。
@@ -452,7 +452,7 @@ def _synth_validated(character, text, speed, top_k, top_p, temperature, sample_s
     if not cleaned:
         raise HTTPException(400, "去掉链接/代码/特殊符号后没有可合成的文字，请换一段普通文字")
     speed = _clamp_speed(speed)
-    logger.info("合成文字(%d字) 角色=%s: %s", len(cleaned), character, cleaned[:40])
+    logger.info("合成文字[%s](%d字) 角色=%s: %s", source, len(cleaned), character, cleaned[:40])
     with _synth_lock:
         return _synth_chunks(
             character, cleaned, top_k, top_p, temperature, speed, sample_steps=sample_steps)
@@ -1013,9 +1013,8 @@ async def openai_compat_speech(request: Request):
     except (TypeError, ValueError):  # noqa: BLE001
         top_k, top_p, temperature = 12, 0.9, 0.7
     try:
-        logger.info("OpenAI兼容合成(%d字) 角色=%s: %s", len(text), character, text[:40])
         audio_np, sr = _synth_validated(
-            character, text, speed, top_k, top_p, temperature, TTS_SAMPLE_STEPS)
+            character, text, speed, top_k, top_p, temperature, TTS_SAMPLE_STEPS, source="openai")
         if len(audio_np) == 0:
             raise HTTPException(500, "合成结果为空")
         mp3 = _wav_to_mp3(audio_np, sr)
@@ -1116,6 +1115,33 @@ def _startup_warmup():
 
 
 threading.Thread(target=_startup_warmup, daemon=True).start()
+
+
+def _watch_parent():
+    """父进程看护兜底：看门狗窗口被关闭/看门狗进程退出时，本服务在 3 秒内随之
+    退出，确保显卡/内存立即释放（Job 对象之外的第二道保险，Job 万一失效也不留孤儿）。
+    仅当父进程是 tts_watchdog 看门狗时启用，手动 python 启动不受影响。"""
+    try:
+        import psutil
+        parent = psutil.Process().parent()
+        if not parent or "tts_watchdog" not in " ".join(parent.cmdline() or []):
+            return
+        ppid = parent.pid
+    except Exception:  # noqa: BLE001
+        return
+    logger.info("父进程看护已启动（看门狗 PID=%d，看门狗退出则服务随之退出）", ppid)
+    while True:
+        try:
+            psutil.Process(ppid).wait(0)  # 存活则立刻超时返回
+        except psutil.NoSuchProcess:
+            logger.warning("看门狗进程(%d)已退出，服务随之退出并释放显卡/内存", ppid)
+            os._exit(0)
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(3)
+
+
+threading.Thread(target=_watch_parent, daemon=True).start()
 
 
 if __name__ == "__main__":

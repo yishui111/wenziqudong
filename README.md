@@ -129,7 +129,8 @@ curl -X POST -H "Content-Type: application/json" -d "{\"model\":\"liejun\",\"inp
 
 ## ❓ 常见问题（FAQ）
 
-- **Q：双击启动没反应 / 页面打不开？** A：首次加载 torch 与模型约需 5–10 分钟，期间 `/health` 不通属正常；服务与看门狗日志在 `tts_service\tmp\`（`tts_python.log` / `tts_watchdog.log`），可查看是否缺引擎/模型（先按 DEPLOY.md 摆好 `gptsovits\GPT-SoVITS` 与音色模型）。
+- **Q：双击 start.bat 一闪就没了 / 提示端口被占？** A：多半是 8060 被其他程序占用（例如 duihuamoxing 项目内置的同款 TTS 服务）。本项目 start.bat 会**自动改用 8062~8069 中第一个空闲端口**（stop.bat 会自动跟随，无需设置），页面地址以启动窗口/自动打开的浏览器为准；也可手动 `set TTS_API_PORT=8062` 指定。
+- **Q：双击启动没反应 / 页面打不开？** A：首次加载 torch 与模型约需 5–10 分钟，期间 `/health` 不通属正常；服务与看门狗日志在 `tts_service\tmp\`（`tts_python.log` / `tts_watchdog.log`），可查看是否缺引擎/模型（先按 DEPLOY.md 摆好 `gptsovits\GPT-SoVITS` 与音色模型）。若显卡/内存被其他 AI 程序暂时占满，看门狗会每 60 秒自动重试，等资源空出来即可启动成功。
 - **Q：下拉框没有角色 / 角色显示「缺文件」？** A：每个角色目录必须 4 件齐全（`<名>.ckpt`、`<名>.pth`、`ref.wav`、`ref_text.txt`），目录放进 `tts_service\models\` 后 `GET /models` 即热刷新，无需重启。
 - **Q：合成漏字 / 跳读？** A：多为参考音频问题：`ref.wav` 建议 3–10 秒干净人声，`ref_text.txt` 必须与音频内容一字不差。本服务已默认保守采样参数（top_k 12 / top_p 0.9 / temperature 0.7）+ 20 字分句，可大幅缓解。
 - **Q：`Failed to fetch`？** A：服务未就绪或已停止。等就绪后刷新页面；或到项目目录双击「一键启动文字驱动语音.bat」。
