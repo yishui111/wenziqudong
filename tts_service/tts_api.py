@@ -208,6 +208,25 @@ sys.argv = [
     "-b", os.path.join(GSV_ROOT, "GPT_SoVITS", "pretrained_models", "chinese-roberta-wwm-ext-large"),
     "-p", str(API_PORT),
 ]
+# onnxruntime 的 wheel 自带 CUDA/TensorRT EP，引擎（GPT-SoVITS text/g2pw/onnx_api.py）
+# 见 get_available_providers() 里有 CUDA 就强行建 CUDA 会话；机器上有 CUDA_PATH 但
+# 版本与 onnxruntime 所需 DLL 不匹配时（如系统 CUDA 12.8 vs onnxruntime-gpu 1.17 需 CUDA 11.8）
+# 会直接抛异常，v3/v4 类模型的中文文本前端（G2PW）初始化失败 → 合成 500。
+# G2PW 只是文字转拼音的轻量前端，CPU 足够：这里让 get_available_providers 不再报告
+# CUDA/TensorRT，引擎会自动走它现成的 CPU 分支，任何机器都稳。
+try:
+    import onnxruntime as _ort
+
+    _ort_providers_orig = _ort.get_available_providers
+
+    def _cpu_only_providers():
+        return [p for p in _ort_providers_orig() if p not in ("CUDAExecutionProvider", "TensorrtExecutionProvider")]
+
+    _ort.get_available_providers = _cpu_only_providers
+    logger.info("onnxruntime 已固定使用 CPU provider（G2PW 文本前端），规避机器 CUDA 版本不匹配问题")
+except Exception:  # noqa: BLE001
+    pass
+
 import api as gpt_api  # noqa: E402
 
 _gsv_lock = threading.Lock()
@@ -257,7 +276,7 @@ def gpt_sovits_tts(character, text, top_k, top_p, temperature, speed, sample_ste
                     torch.cuda.empty_cache()
                 except Exception:  # noqa: BLE001
                     pass
-            logger.info("加载角色模型(首次，约1-2分钟): %s", character)
+            logger.info("加载角色模型(角色切换,实测约1-3秒): %s", character)
             gpt = gpt_api.get_gpt_weights(info["gpt"])
             sovits = gpt_api.get_sovits_weights(info["sovits"])
             _speaker_cache[character] = gpt_api.Speaker(name=character, gpt=gpt, sovits=sovits)
@@ -465,16 +484,12 @@ from fastapi.responses import HTMLResponse, Response  # noqa: E402
 
 app = FastAPI(title="文字驱动语音（GPT-SoVITS TTS）")
 
-# NOTICE: 开放浏览器跨域（AIRI 数字人前端在 localhost:5173 直接调本服务）。
-# 仅放开本地开发端口；如需更严可把列表换成具体 origin。不影响 TTS 合成逻辑。
+# NOTICE: 本服务对外暴露接口（见项目根目录《接口文档.md》），放开浏览器跨域，
+# 其他网页前端（AIRI 数字人 localhost:5173 等）可直接调用。本服务无 Cookie/鉴权，
+# allow_credentials=False 下放开 origin 无安全风险；如需收紧可换回具体 origin 列表。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://127.0.0.1:5173",
-        "http://localhost:5173",
-        "http://127.0.0.1:8088",
-        "http://localhost:8088",
-    ],
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -850,7 +865,7 @@ def free_memory():
             torch.cuda.empty_cache()
         except Exception:  # noqa: BLE001
             pass
-    return {"message": "已清空模型缓存并释放显存（下次合成需重新加载模型，约 1-2 分钟）"}
+    return {"message": "已清空模型缓存并释放显存（再次合成时自动重新加载角色，实测约1-3秒）"}
 
 
 def _watchdog_alive():
@@ -981,18 +996,20 @@ async def openai_compat_speech(request: Request):
     """OpenAI 兼容 TTS 合成。请求体 JSON：{model, input, voice, speed, ...}
     voice（或 model）即训练好的角色名；input 为要朗读的文本；返回 audio/mpeg
     （mp3）。返回 mp3 而非 wav 可以让 Open WebUI 跳过 pydub 转码，端到端
-    更快（Open WebUI 的 transcode_audio_to_mp3 对 audio/mpeg 直接放行）。"""
+    更快（Open WebUI 的 transcode_audio_to_mp3 对 audio/mpeg 直接放行）。
+    字段别名：文本也接受 text，角色也接受 character——对接方按《接口文档.md》
+    用哪种字段名都能通，Open WebUI 等标准 OpenAI 客户端不受影响。"""
     raw = await request.body()
     try:
         payload = json.loads(raw)
     except Exception:  # noqa: BLE001
         raise HTTPException(400, "请求体必须是 JSON")
-    text = (payload.get("input") or "").strip()
+    text = (payload.get("input") or payload.get("text") or "").strip()
     if not text:
-        raise HTTPException(400, "input 不能为空")
+        raise HTTPException(400, "input(text) 不能为空")
     if len(text) > TTS_MAX_CHARS:
-        raise HTTPException(400, "input 最长 %d 字" % TTS_MAX_CHARS)
-    character = (payload.get("voice") or payload.get("model") or "").strip()
+        raise HTTPException(400, "input(text) 最长 %d 字" % TTS_MAX_CHARS)
+    character = (payload.get("voice") or payload.get("model") or payload.get("character") or "").strip()
     # light-avatar 数字人素材库（voice 前缀 avatar:）：不合成音色，
     # 画面由前端显示，音频用默认训练音色合成
     if character.startswith("avatar:"):

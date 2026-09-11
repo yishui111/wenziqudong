@@ -29,6 +29,7 @@
 - 自检：`GET /health`、`GET /models`；`python tests\test_tts_client.py` 冒烟合成
 - OpenAI 兼容端点（供 Open WebUI 等调用）：`POST /v1/audio/speech`（JSON {model, input, voice, speed} → mp3）、
   `GET /v1/audio/voices`、`GET /v1/models`
+- 对外接口文档：项目根目录《接口文档.md》，对接方按「查状态 /health → 查角色 /models → 配音 /v1/audio/speech」三步接入；`input`/`voice` 也接受 `text`/`character` 字段名；CORS 已放开（allow-origin: *）
 - 角色热加载：`GET /models` 会重新扫描模型目录，放入新模型目录后无需重启
 
 ## 4. 关键约定（非显而易见）
@@ -37,6 +38,9 @@
 - 单角色缓存默认开启：切换音色自动释放上一个（省显存）；页面可勾选「缓存多个角色模型」。
 - 参考音频选该角色清晰、有代表性的 3~10 秒人声；ref_text 必须与音频内容一字不差，否则合成跑偏。
 - 默认端口 8060；推理设备/端口/引擎路径等均可用环境变量覆盖（见 DEPLOY.md 第 8 节），禁止硬编码本机路径。
+- 踩坑记录：机器装了 CUDA_PATH（如 CUDA 12.8）但与 onnxruntime-gpu 需求不匹配时，GPT-SoVITS 的 G2PW 文本前端
+  （v3/v4 类模型）建 CUDA 会话直接抛异常、合成 500。已在 tts_api.py 启动时把 onnxruntime 的
+  get_available_providers 过滤成 CPU（G2PW 很轻，CPU 足够），任何机器都稳，勿删该补丁。
 
 ## 5. 交付与文档约定
 

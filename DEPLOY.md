@@ -117,13 +117,15 @@ python tts_service\tts_api.py
 
 ## 7. 接口与自检
 
+> 📄 对外对接文档在项目根目录 [接口文档.md](接口文档.md)（面向调用方：查状态 / 查角色 / 配音三接口 + 示例 + 错误处理），本表为速查。
+
 | 接口 | 方法 | 说明 |
 | --- | --- | --- |
 | `/` | GET | 网页界面 |
 | `/tts` | POST | `text`+`character`+可选 `speed/top_k/top_p/temperature/sample_steps` → wav（内存直出，不落盘） |
 | `/models` | GET | 角色列表（热刷新） |
 | `/health` | GET | 健康检查（status/device/ready_roles/max_chars） |
-| `/v1/audio/speech` | POST | OpenAI 兼容 TTS：JSON `{model, input, voice, speed}` → mp3（voice=角色名） |
+| `/v1/audio/speech` | POST | OpenAI 兼容 TTS：JSON `{model, input, voice, speed}` → mp3（voice=角色名；`input`/`voice` 也接受 `text`/`character` 写法） |
 | `/v1/audio/voices` | GET | OpenAI 兼容音色列表 |
 | `/v1/models` | GET | OpenAI 兼容模型列表 |
 | `/api/delete_role` | POST | 删除角色（Form: character，真删本地模型目录） |

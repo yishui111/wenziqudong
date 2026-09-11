@@ -105,13 +105,15 @@ start.bat
 
 ## 🔌 接口速览（默认端口 8060）
 
+> 📄 **对外对接请直接读 [接口文档.md](接口文档.md)**——面向调用方的完整对接文档（查状态 / 查角色 / 配音三接口，含 curl / Python / JavaScript 示例、错误处理与注意事项），本文表格仅作速查。
+
 | 接口 | 方法 | 说明 |
 | --- | --- | --- |
 | `/` | GET | 网页界面（输入文字 → 合成语音） |
 | `/tts` | POST | `text` + `character` + 可选 `speed/top_k/top_p/temperature/sample_steps` → wav |
 | `/models` | GET | 角色列表（含 ready / 缺文件状态，热刷新） |
 | `/health` | GET | 健康检查 |
-| `/v1/audio/speech` | POST | **OpenAI 兼容 TTS**：JSON `{model, input, voice, speed}` → mp3，`voice` 即角色名 |
+| `/v1/audio/speech` | POST | **OpenAI 兼容 TTS**：JSON `{model, input, voice, speed}` → mp3，`voice` 即角色名（`input`/`voice` 也接受 `text`/`character` 写法） |
 | `/v1/audio/voices` | GET | OpenAI 兼容音色列表（Open WebUI 的 TTS Voice 下拉自动显示） |
 | `/v1/models` | GET | OpenAI 兼容角色模型列表 |
 | `/api/delete_role` | POST | 删除角色（真删本地模型目录，防误删双确认） |
@@ -140,7 +142,7 @@ curl -X POST -H "Content-Type: application/json" -d "{\"model\":\"liejun\",\"inp
 
 - 本仓库**不含**任何真人音色模型与训练数据，请勿上传他人声音克隆产物到公开仓库（肖像/声音权属风险）；
 - 音色模型 `*.ckpt / *.pth / ref.wav` 等已被 `.gitignore` 忽略，勿用 `git add -f` 强推；
-- 单角色模型约 230MB、加载 1–2 分钟；合成时 GPU 显存约 3–5GB，与其他大显存任务建议错开；
+- 单角色模型约 230MB；**切换角色时服务自动卸载旧模型、加载新模型（实测约 1–3 秒）**，显存不累积；合成时 GPU 显存约 3–5GB，与其他大显存任务建议错开；
 - 文字超过上限（默认 1000 字，可用环境变量 `TTS_MAX_CHARS` 调整）会被拒绝，请分段合成；
 - 本仓库仅供学习交流使用，请勿用于违法违规用途。
 
