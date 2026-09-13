@@ -6,7 +6,8 @@
 #   2. 写 pid 文件 tts_service\tmp\tts_watchdog.pid：
 #      { watchdog: 看门狗PID, python: 服务PID, started: 启动时间 }
 #   3. python 异常退出后 3 秒自动重启；连续 3 次 30 秒内快速退出
-#      则退出看门狗（避免死循环，常见原因是 8060 被占用）
+#      则等 60 秒后继续重试、不放弃（常见原因是 18062 被占用，
+#      或显卡/内存被其它 AI 程序暂时占满）
 #   4. **关闭本窗口 = 看门狗 + 服务一起结束**：python 被 Windows Job
 #      对象托管（KILL_ON_JOB_CLOSE），看门狗进程一死，内核立即终止
 #      python 并释放显卡/内存；tts_api.py 内另有父进程看护线程兜底

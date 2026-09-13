@@ -8,13 +8,13 @@
 > 说明：引擎、模型、镜像、运行时等大件体积超过 GitHub 单文件 100MB 上限，**不随仓库分发**；本仓库承载全部自研代码与装配指引，"方式 A"是换机部署最稳路径，"方式 B"适合需要重新下载大件的场景。
 # 文字驱动语音（wenziqudong）· 部署方案（DEPLOY）
 
-> 目标：在一台新电脑上，把本仓库**部署成可用的 GPT-SoVITS 文字驱动 TTS 服务**（端口 8060）。
+> 目标：在一台新电脑上，把本仓库**部署成可用的 GPT-SoVITS 文字驱动 TTS 服务**（端口固定 18062）。
 > 本仓库只含**自研代码/测试/文档**；引擎、运行时、音色模型均为**大件，需自行下载或从旧环境拷贝**（下方有清单）。
 > 每次修改代码后同步更新本文件与 README.md。
 
 ## 1. 项目是什么
 
-自研 FastAPI 封装（`tts_service\tts_api.py`，端口 8060）：输入文字 → 用 GPT-SoVITS 音色模型合成语音。
+自研 FastAPI 封装（`tts_service\tts_api.py`，端口 18062）：输入文字 → 用 GPT-SoVITS 音色模型合成语音。
 只做推理；音色模型按目录扫描自动识别，复制进 `tts_service\models\` 即生效。
 代码通过**相对路径 + 环境变量**定位引擎与模型（无任何盘符硬编码），放到任意位置均可运行。
 
@@ -33,7 +33,7 @@
 ```
 <任意位置>\wenziqudong\            （本仓库代码）
 ├─ tts_service\
-│   ├─ tts_api.py                  主服务（FastAPI，8060）
+│   ├─ tts_api.py                  主服务（FastAPI，18062）
 │   ├─ tts_watchdog.ps1            看门狗（崩溃 3 秒自动重启；日志/pid 写 tmp\）
 │   └─ models\<角色名>\              音色模型 4 件套（自备，见第 5 节）
 ├─ tests\                          测试脚本（可选）
@@ -86,14 +86,14 @@ start.bat        :: 或双击「一键启动文字驱动语音.bat」
 
 - 脚本防重复双击：已运行 → 提示退出；正在启动（看门狗存活）→ 提示退出；只有确认没在跑才启动。
 - 看门狗在**前台控制台窗口**运行：服务日志实时滚动显示在该窗口（同时写入 `tts_service\tmp\tts_python.log`）；python 异常退出 **3 秒自动重启**（连续 3 次 30 秒内快速退出则看门狗自停，防死循环）；python 被 Windows Job 对象托管，**直接关闭该窗口 = 看门狗 + 服务一起结束，显卡/内存立即释放**（不留孤儿进程）。
-- 首次加载 torch/模型约 **5–10 分钟**，就绪后脚本自动打开 http://127.0.0.1:8060/ 。
-- 停止：`stop.bat`（或双击「关闭文字驱动语音.bat」）——先杀看门狗再杀 python 并兜底清理 8060 占用，**关闭后不会自动重启**。
+- 首次加载 torch/模型约 **5–10 分钟**，就绪后脚本自动打开 http://127.0.0.1:18062/ 。
+- 停止：`stop.bat`（或双击「关闭文字驱动语音.bat」）——先杀看门狗再杀 python 并兜底清理 18062 占用，**关闭后不会自动重启**。
 - 端口/设备可用环境变量覆盖（在启动前设置，看门狗会继承）：
 
 ```bat
 set TTS_DEVICE=cpu          :: 默认 cuda（需显卡）；cpu 不吃显存
 set TTS_DEFAULT_VOICE=xxx   :: 默认预热音色（默认取第一个可用角色）
-set TTS_API_PORT=8060       :: 默认 8060
+set TTS_API_PORT=18062       :: 固定 18062（默认值，正常无需设置）
 set GSV_ROOT=D:\path\to\GPT-SoVITS   :: 引擎不在 gptsovits\GPT-SoVITS 时指定
 ```
 
@@ -110,7 +110,7 @@ pip install -r requirements.txt                          # 本服务直接依赖
 # 5) 启动（无看门狗，崩溃不会自愈；生产建议配合 supervisor/计划任务）：
 set TTS_DEVICE=cuda
 python tts_service\tts_api.py
-# 6) 浏览器访问 http://127.0.0.1:8060/
+# 6) 浏览器访问 http://127.0.0.1:18062/
 ```
 
 > 方式二下代码仍按相对路径找引擎（默认 `gptsovits\GPT-SoVITS`），找不到就用 `GSV_ROOT`/`GSV_MODELS_DIR` 环境变量指向已有引擎/模型目录。
@@ -135,8 +135,8 @@ python tts_service\tts_api.py
 | `/api/reset` | POST | 服务卡住时一键重置（退出进程，看门狗自动拉起） |
 
 ```bash
-curl -X POST -F "text=大家好，我是雷军。" -F "character=liejun" http://127.0.0.1:8060/tts -o out.wav
-curl -X POST -H "Content-Type: application/json" -d "{\"model\":\"liejun\",\"input\":\"大家好，我是雷军。\",\"voice\":\"liejun\"}" http://127.0.0.1:8060/v1/audio/speech -o out.mp3
+curl -X POST -F "text=大家好，我是雷军。" -F "character=liejun" http://127.0.0.1:18062/tts -o out.wav
+curl -X POST -H "Content-Type: application/json" -d "{\"model\":\"liejun\",\"input\":\"大家好，我是雷军。\",\"voice\":\"liejun\"}" http://127.0.0.1:18062/v1/audio/speech -o out.mp3
 ```
 
 自检命令：`GET /health` 正常 → `GET /models` 列出角色 → `POST /tts` 冒烟合成 wav 可播放。
@@ -148,7 +148,7 @@ curl -X POST -H "Content-Type: application/json" -d "{\"model\":\"liejun\",\"inp
 | --- | --- | --- |
 | `TTS_DEVICE` | `cuda` | 推理设备：`cuda`/`cpu` |
 | `TTS_DEFAULT_VOICE` | 第一个可用角色 | 启动后后台预热的音色 |
-| `TTS_API_PORT` | `8060` | 服务端口 |
+| `TTS_API_PORT` | `18062` | 服务端口（固定 18062，一般不要改） |
 | `GSV_ROOT` | `<仓库>\gptsovits\GPT-SoVITS` | 引擎根目录 |
 | `GSV_MODELS_DIR` | `<仓库>\tts_service\models` | 音色模型目录 |
 | `TTS_MULTI_ROLES` | 空 | `1` = 启动即多角色缓存 |
@@ -159,14 +159,14 @@ curl -X POST -H "Content-Type: application/json" -d "{\"model\":\"liejun\",\"inp
 
 ## 9. 常见问题排查
 
-- **双击没反应 / 服务起不来**：先查 `tts_service\tmp\tts_python.log`（stdout/stderr 已合并写入）与 `tts_watchdog.log`。常见：`gptsovits\GPT-SoVITS` 或 `runtime\py312\python.exe` 不存在、8060 被占用、没放音色模型（会直接报「没有可用的声音模型」）。
+- **双击没反应 / 服务起不来**：先查 `tts_service\tmp\tts_python.log`（stdout/stderr 已合并写入）与 `tts_watchdog.log`。常见：`gptsovits\GPT-SoVITS` 或 `runtime\py312\python.exe` 不存在、18062 被占用、没放音色模型（会直接报「没有可用的声音模型」）。
 - **首次启动要等多久**：加载 torch/预训练模型约 5–10 分钟，期间 `/health` 不通属正常。
 - **页面报「Failed to fetch」**：服务正在启动/刚重启，等就绪后刷新；或服务已停，重新双击启动脚本。
 - **换角色每次都要重新加载 1–2 分钟**：每个角色是独立模型（约 230MB），首次使用加载后常驻缓存；服务重启清空缓存属正常。多个音色频繁切换可在页面勾选「缓存多个角色模型」。
 - **英文混排报 `Resource 'averaged_perceptron_tagger_eng' not found`**：按第 4 节补装 NLTK 资源。
 - **合成漏字/跳读**：优先检查该角色 `ref.wav` 时长（3–10 秒）与 `ref_text.txt` 是否一致；本服务默认已用保守采样参数 + 20 字分句。
 - **无 GPU 也想跑**：`set TTS_DEVICE=cpu` 后启动（不吃显存，合成稍慢）。
-- **端口冲突**：8060 被其他程序占用时，start.bat 自动改用 8062~8069 中第一个空闲端口（记入 `tts_service\tmp\port.txt`，stop.bat 自动跟随；8060 空出来后下次启动自动回到 8060）。也可 `set TTS_API_PORT=xxxx` 手动指定；本副本只会清理自己启动的进程，不会动其他项目的服务。
+- **端口冲突**：本项目**固定端口 18062**（对外接口地址稳定，不自动漂移）。若 18062 被其他程序占用，start.bat 会打印 `ERROR: port 18062 is still in use by another program` 并退出——先停掉占用 18062 的程序再启动。18062 选在 Windows 动态端口范围（1024~15000）之外，不会被系统临时连接随机抢占；同机 duihuamoxing 用 8061/18060，完全错开。仅当 18062 确实不可用时，才临时 `set TTS_API_PORT=8070` 换端口（stop.bat 会跟随 `tts_service\tmp\port.txt`）；本副本只会清理自己启动的进程，不会动其他项目的服务。
 - **页面点「重置服务」被拒绝**：说明服务当前不是看门狗托管的（如手动 python 启动、看门狗已死），直接重置会无法自愈。按提示双击 `stop.bat` 再 `start.bat`（start.bat 启动时也会对这种状态打印 WARNING）。
 - **启动时报 CUDA out of memory / MemoryError**：显卡或系统内存被其他 AI 程序（LLM、ComfyUI、同机其他 TTS 等）暂时占满。看门狗会每 60 秒自动重试，等资源空出来即自动启动成功；也可先关掉部分程序。
 

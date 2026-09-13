@@ -5,15 +5,14 @@
 
 ## 1. 项目概述
 
-文字驱动语音服务（独立项目，默认端口 8060）：输入文字 → 用训练好的 GPT-SoVITS 音色模型合成语音。
+文字驱动语音服务（独立项目，固定端口 18062）：输入文字 → 用训练好的 GPT-SoVITS 音色模型合成语音。
 只做推理；音色模型由训练方（GPT-SoVITS few-shot 训练）产出「4 件套」后，用户手动复制到
 `tts_service\models\<角色名>\`，本服务目录扫描自动识别，不做训练、不接收自动推送。
 
 ## 2. 关键结构
 
-- `tts_service\tts_api.py`：主服务（FastAPI，8060，内置网页界面 + OpenAI 兼容端点）
+- `tts_service\tts_api.py`：主服务（FastAPI，18062，内置网页界面 + OpenAI 兼容端点）
 - `tts_service\tts_watchdog.ps1`：看门狗（服务崩溃 3 秒自动重启；资源被占时每 60 秒重试不放弃）
-- `tts_service\choose_port.ps1`：启动端口决策（8060 被占时自动挑 8062~8069 空闲端口，结果记入 tmp\port.txt）
 - `tts_service\models\<角色名>\`：音色模型目录（自备，目录扫描自动识别）
 - `gptsovits\GPT-SoVITS\`、`runtime\`：第三方引擎/运行时，体积大不入库，见 `DEPLOY.md`
 - `tests\`：自研测试脚本；`tts_service\tmp\`：运行时临时文件/日志（不入库）
@@ -22,7 +21,7 @@
 ## 3. 工作方式
 
 - 启动：双击 `start.bat` 或 `一键启动文字驱动语音.bat`（防重复双击、看门狗托管、就绪自动开浏览器）；
-  8060 被其他程序占用时自动改用 8062~8069 空闲端口（`tmp\port.txt` 记忆，stop.bat 自动跟随），绝不杀其他项目的进程
+  端口**固定 18062**、绝不自动漂移（对外接口地址必须稳定）；若 18062 被其他程序占用则明确报错退出，绝不杀其他项目的进程
 - 服务在前台黑框窗口运行，日志实时滚动（同时写 `tts_service\tmp\tts_python.log`，stdout/stderr 已合并且由 tts_api.py 自身双写；旧 `.err` 文件已废弃）
 - 停止：双击 `stop.bat` 或 `关闭文字驱动语音.bat`（先杀看门狗再杀 python，关闭后不会自动重启）；**直接关闭服务窗口亦可**——python 由 Windows Job 对象（KILL_ON_JOB_CLOSE）托管，看门狗一死内核立即终止服务，显卡/内存随之释放，不留孤儿进程；tts_api.py 内另有父进程看护线程兜底
 - 显卡/内存被其他 AI 程序暂时占满导致启动失败时，看门狗每 60 秒自动重试，不会放弃退出
@@ -37,7 +36,8 @@
 - 每个角色必须 4 个文件齐全才可用：`<名>.ckpt`、`<名>.pth`、`ref.wav`、`ref_text.txt`。
 - 单角色缓存默认开启：切换音色自动释放上一个（省显存）；页面可勾选「缓存多个角色模型」。
 - 参考音频选该角色清晰、有代表性的 3~10 秒人声；ref_text 必须与音频内容一字不差，否则合成跑偏。
-- 默认端口 8060；推理设备/端口/引擎路径等均可用环境变量覆盖（见 DEPLOY.md 第 8 节），禁止硬编码本机路径。
+- 端口固定 18062（对外接口地址不得变动，禁止恢复自动换端口逻辑；18062 在 Windows 动态端口范围 1024~15000 之外，不会被系统随机抢占；同机 duihuamoxing 用 8061/18060）；
+  推理设备/引擎路径等均可用环境变量覆盖（见 DEPLOY.md 第 8 节），禁止硬编码本机路径。
 - 踩坑记录：机器装了 CUDA_PATH（如 CUDA 12.8）但与 onnxruntime-gpu 需求不匹配时，GPT-SoVITS 的 G2PW 文本前端
   （v3/v4 类模型）建 CUDA 会话直接抛异常、合成 500。已在 tts_api.py 启动时把 onnxruntime 的
   get_available_providers 过滤成 CPU（G2PW 很轻，CPU 足够），任何机器都稳，勿删该补丁。
@@ -56,7 +56,7 @@
 - 文档与注释使用简体中文；用户当场说的话优先级最高。
 ---
 ### 关键点（2026-09-02 上传整理补充）
-- tts_service/tts_api.py = 自研 FastAPI 封装（端口 8060；网页 + OpenAI 兼容 /v1/audio/speech + 看门狗），字节原样入库
+- tts_service/tts_api.py = 自研 FastAPI 封装（端口 18062；网页 + OpenAI 兼容 /v1/audio/speech + 看门狗），字节原样入库
 - 引擎/模型/端口/设备全部可用环境变量覆盖：GSV_ROOT / GSV_MODELS_DIR / TTS_API_PORT / TTS_DEVICE
 - 大件不入库：gptsovits\GPT-SoVITS(~4.6GB)、runtime\py312+ffmpeg(~9.6GB)、tts_service\models 音色(~1.9GB 真人音色)；摆位见 DEPLOY
 - 原中文 bat 已重写为 ASCII/CRLF/无 BOM；一键启动文字驱动语音.bat 为兼容壳

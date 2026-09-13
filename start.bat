@@ -1,11 +1,15 @@
 @echo off
 rem ============================================================
 rem  Wenziqudong Text-to-Speech (GPT-SoVITS) - one-click start
-rem  - PORT: prefers 8060; if 8060 is held by a DIFFERENT program
-rem    (e.g. a sibling project's TTS), automatically picks the first
-rem    free port in 8062..8069 and remembers it (tmp\port.txt).
-rem    It NEVER kills another program. Manual override works too:
-rem        set TTS_API_PORT=8062
+rem  - PORT: FIXED at 18062. This project's public API address must never
+rem    change, so it does NOT auto-switch ports. 18062 sits OUTSIDE the
+rem    Windows dynamic port range (1024-15000 on this machine), so the OS
+rem    never hands it to a random outbound connection. Sibling project
+rem    duihuamoxing uses 8061/18060, fully separated. If 18062 is taken
+rem    by another program, start.bat reports it and exits - it NEVER
+rem    kills another program.
+rem    Emergency override only (not normal use):
+rem        set TTS_API_PORT=8070
 rem  - guards against double-click: detects an already-running copy
 rem    of THIS service or a starting watchdog, then exits.
 rem  - if an orphaned copy of THIS project runs without watchdog,
@@ -22,17 +26,11 @@ set "PIDFILE=%ROOT%tts_service\tmp\tts_watchdog.pid"
 set "PORTFILE=%ROOT%tts_service\tmp\port.txt"
 if not defined TTS_DEVICE set "TTS_DEVICE=cuda"
 
-rem ---------- 0) decide which port to use ----------
-rem priority: remembered port with our healthy service > free 8060 >
-rem (8060 busy) first free of 8062..8069
-set "TTS_API_PORT="
-for /f "usebackq delims=" %%p in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%tts_service\choose_port.ps1"`) do set "TTS_API_PORT=%%p"
-if not defined TTS_API_PORT set "TTS_API_PORT=0"
-if "%TTS_API_PORT%"=="0" (
-    echo  ERROR: no free port found in 8060 / 8062-8069. Close some program and retry.
-    timeout /t 15 >nul
-    exit /b 1
-)
+rem ---------- 0) FIXED port ----------
+rem This project always serves on 18062 - the public API address must stay
+rem stable for integrators. No auto-switching, no port scan, no port.txt
+rem lookup. Override only if 18062 is genuinely unusable on a new machine.
+if not defined TTS_API_PORT set "TTS_API_PORT=18062"
 
 echo ============================================
 echo   WenZiQuDong TTS (GPT-SoVITS)  -  port %TTS_API_PORT%
@@ -47,9 +45,10 @@ rem ---------- 1a) is it THIS copy of the service? ----------
 powershell -NoProfile -Command "try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:%TTS_API_PORT%/health' -TimeoutSec 3; if ($r.service -eq 'wenziqudong-tts') { exit 0 }; Write-Output ('  foreign service on port: ' + $r.service); exit 9 } catch { exit 1 }"
 if %errorlevel% equ 9 (
     echo  Port %TTS_API_PORT% is held by a DIFFERENT program. This script will NOT kill it.
+    echo  This project uses a FIXED port and does NOT switch automatically.
     echo  Fix A: stop that program, then run start.bat again to use port %TTS_API_PORT%.
-    echo  Fix B: start this project on a free port instead. Example:
-    echo     set TTS_API_PORT=8062
+    echo  Fix B: run this project on another port for this session:
+    echo     set TTS_API_PORT=8070
     echo     start.bat
     timeout /t 15 >nul
     exit /b 1
@@ -81,6 +80,21 @@ rem ---------- 3) clean up leftover python of THIS copy only ----------
 echo Starting service...
 powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -like '*%ROOT%tts_service\tts_api.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 if exist "%PIDFILE%" del /f /q "%PIDFILE%"
+
+rem ---------- 3b) after our own leftovers are gone, is the port still taken? ----------
+rem Fixed port means we never drift. If a foreign program holds 18062, refuse
+rem to start and tell the user, instead of silently moving to another port.
+powershell -NoProfile -Command "if (Get-NetTCPConnection -LocalPort %TTS_API_PORT% -State Listen -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
+if %errorlevel% equ 0 (
+    echo  ERROR: port %TTS_API_PORT% is still in use by another program.
+    echo  This project uses a FIXED port and will NOT switch automatically.
+    echo  Fix A: stop the program holding port %TTS_API_PORT%, then run start.bat again.
+    echo  Fix B: run on another port for this session:
+    echo     set TTS_API_PORT=8070
+    echo     start.bat
+    timeout /t 20 >nul 2>nul
+    exit /b 1
+)
 
 rem ---------- 4) launch watchdog in a visible console window ----------
 rem The window shows live service logs; closing that window stops the service.

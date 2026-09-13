@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """整体回归：对运行中的服务做全端点测试。用法：
-    python tests/test_regression.py [base_url]   # 默认 http://127.0.0.1:8062
+    python tests/test_regression.py [base_url]   # 默认 http://127.0.0.1:18062
 """
 import sys
 
 import requests
 
-B = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8062"
+B = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:18062"
 ok = fail = 0
 
 

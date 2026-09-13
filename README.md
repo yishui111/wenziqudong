@@ -16,7 +16,7 @@
 
 ## ✨ 项目简介
 
-这是一个**自研的文字驱动语音（TTS）服务封装**（`tts_service/tts_api.py`，FastAPI，端口 8060）：
+这是一个**自研的文字驱动语音（TTS）服务封装**（`tts_service/tts_api.py`，FastAPI，端口 18062）：
 把训练好的 GPT-SoVITS 音色模型变成「复制进目录即自动识别、输入文字即可合成」的独立服务，只做**推理**，不做训练。
 
 - **角色热加载**：音色模型按「目录扫描」自动发现（`tts_service\models\<角色名>\`），复制进来立刻可用，无需改代码、无需重启
@@ -41,7 +41,7 @@
 ```
 wenziqudong/
 ├── tts_service/
-│   ├── tts_api.py            # 主服务（FastAPI，端口 8060，内置网页界面）
+│   ├── tts_api.py            # 主服务（FastAPI，端口 18062，内置网页界面）
 │   ├── tts_watchdog.ps1      # 看门狗：启动 python、崩溃 3 秒自动重启
 │   └── models/<角色名>/       # 音色模型（4 件套：ckpt/pth/ref.wav/ref_text.txt，自备）
 ├── tests/                    # 自研测试脚本（TTS 冒烟、换角色、官方直测对比等）
@@ -89,7 +89,7 @@ start.bat
 
 ### 4. 验证
 
-浏览器打开 http://127.0.0.1:8060/ ，选角色、输文字、点「开始合成」，能听到语音即部署成功。
+浏览器打开 http://127.0.0.1:18062/ ，选角色、输文字、点「开始合成」，能听到语音即部署成功。
 
 ## 📥 大件资源下载（引擎 / 运行时 / 模型）
 
@@ -103,7 +103,7 @@ start.bat
 
 > 详细步骤（含「从零 pip 安装、不用 bat」的替代方案）见 [DEPLOY.md](DEPLOY.md)。
 
-## 🔌 接口速览（默认端口 8060）
+## 🔌 接口速览（固定端口 18062）
 
 > 📄 **对外对接请直接读 [接口文档.md](接口文档.md)**——面向调用方的完整对接文档（查状态 / 查角色 / 配音三接口，含 curl / Python / JavaScript 示例、错误处理与注意事项），本文表格仅作速查。
 
@@ -124,14 +124,14 @@ start.bat
 
 ```bash
 # 网页端用法
-curl -X POST -F "text=大家好，我是雷军。" -F "character=liejun" http://127.0.0.1:8060/tts -o out.wav
+curl -X POST -F "text=大家好，我是雷军。" -F "character=liejun" http://127.0.0.1:18062/tts -o out.wav
 # OpenAI 兼容用法（Open WebUI 等）
-curl -X POST -H "Content-Type: application/json" -d "{\"model\":\"liejun\",\"input\":\"大家好，我是雷军。\",\"voice\":\"liejun\"}" http://127.0.0.1:8060/v1/audio/speech -o out.mp3
+curl -X POST -H "Content-Type: application/json" -d "{\"model\":\"liejun\",\"input\":\"大家好，我是雷军。\",\"voice\":\"liejun\"}" http://127.0.0.1:18062/v1/audio/speech -o out.mp3
 ```
 
 ## ❓ 常见问题（FAQ）
 
-- **Q：双击 start.bat 一闪就没了 / 提示端口被占？** A：多半是 8060 被其他程序占用（例如 duihuamoxing 项目内置的同款 TTS 服务）。本项目 start.bat 会**自动改用 8062~8069 中第一个空闲端口**（stop.bat 会自动跟随，无需设置），页面地址以启动窗口/自动打开的浏览器为准；也可手动 `set TTS_API_PORT=8062` 指定。
+- **Q：双击 start.bat 一闪就没了 / 提示端口被占？** A：本项目**固定使用端口 18062**——对外接口地址必须稳定，不会自动漂移。若 18062 被其他程序占用，start.bat 会明确报错并退出（不会自动换端口，也不会杀掉别的程序）：先停掉占用 18062 的程序再启动即可。18062 刻意选在 Windows 动态端口范围（1024~15000）之外，不会被系统临时连接随机抢占；同机 duihuamoxing 用 8061/18060，完全错开。仅当 18062 确实不可用时，才临时 `set TTS_API_PORT=8070` 换端口启动。
 - **Q：双击启动没反应 / 页面打不开？** A：首次加载 torch 与模型约需 5–10 分钟，期间 `/health` 不通属正常；服务与看门狗日志在 `tts_service\tmp\`（`tts_python.log` / `tts_watchdog.log`），可查看是否缺引擎/模型（先按 DEPLOY.md 摆好 `gptsovits\GPT-SoVITS` 与音色模型）。若显卡/内存被其他 AI 程序暂时占满，看门狗会每 60 秒自动重试，等资源空出来即可启动成功。
 - **Q：下拉框没有角色 / 角色显示「缺文件」？** A：每个角色目录必须 4 件齐全（`<名>.ckpt`、`<名>.pth`、`ref.wav`、`ref_text.txt`），目录放进 `tts_service\models\` 后 `GET /models` 即热刷新，无需重启。
 - **Q：合成漏字 / 跳读？** A：多为参考音频问题：`ref.wav` 建议 3–10 秒干净人声，`ref_text.txt` 必须与音频内容一字不差。本服务已默认保守采样参数（top_k 12 / top_p 0.9 / temperature 0.7）+ 20 字分句，可大幅缓解。

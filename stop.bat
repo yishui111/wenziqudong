@@ -11,8 +11,9 @@ setlocal
 title WenZiQuDong TTS - Stop
 set "ROOT=%~dp0"
 set "PIDFILE=%ROOT%tts_service\tmp\tts_watchdog.pid"
-rem follow the port this copy last started on (start.bat remembers it)
-set "TTS_API_PORT=8060"
+rem this project's FIXED port is 18062; port.txt (written by start.bat) is
+rem only used to follow a manual TTS_API_PORT override
+set "TTS_API_PORT=18062"
 if exist "%ROOT%tts_service\tmp\port.txt" set /p TTS_API_PORT=<"%ROOT%tts_service\tmp\port.txt"
 
 echo Stopping WenZiQuDong TTS service (port %TTS_API_PORT%)...

@@ -2,7 +2,7 @@
 # 角色列表自动取自服务 /models（第一个可用角色起逐个测试，不限于写死的角色名）
 # 用法：pwsh -File tests\换角色复现测试.ps1
 $ErrorActionPreference = 'Continue'
-$base = 'http://127.0.0.1:8060'
+$base = 'http://127.0.0.1:18062'
 $logFile = Join-Path $PSScriptRoot '换角色测试结果.txt'
 Remove-Item $logFile -ErrorAction SilentlyContinue
 Add-Content $logFile ("换角色合成测试 " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) -Encoding UTF8
