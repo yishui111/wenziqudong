@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>配音角色校对台</title>
+<style>
+  :root{
+    --bg:#16171a; --card:#1f2126; --line:#2e3138; --txt:#e6e6e6;
+    --dim:#9aa0a6; --ok:#1D9E75; --warn:#EF9F27; --bad:#E24B4A; --info:#378ADD;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+       font:14px/1.6 system-ui,"Segoe UI","Microsoft YaHei",sans-serif;padding:20px}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:18px;font-weight:500;margin:0 0 4px}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:16px}
+  .bar{background:var(--card);border:1px solid var(--line);border-radius:10px;
+       padding:12px 14px;margin-bottom:16px;display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+  .bar input[type=text]{flex:1;min-width:280px;background:#15161a;color:var(--txt);
+       border:1px solid var(--line);border-radius:6px;padding:7px 10px;font-size:13px}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        padding:14px 16px;margin-bottom:12px}
+  .head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+  .name{font-size:15px;font-weight:500;min-width:120px}
+  .badge{font-size:11px;padding:2px 8px;border-radius:20px;border:1px solid;line-height:1.7}
+  .b-ok{color:var(--ok);border-color:var(--ok)}
+  .b-warn{color:var(--warn);border-color:var(--warn)}
+  .b-fix{color:var(--info);border-color:var(--info)}
+  .b-dim{color:var(--dim);border-color:var(--line)}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start;margin-bottom:10px}
+  .fld{flex:1;min-width:260px}
+  .lab{font-size:12px;color:var(--dim);margin-bottom:4px}
+  textarea{width:100%;background:#15161a;color:var(--txt);border:1px solid var(--line);
+           border-radius:6px;padding:7px 9px;font:13px/1.5 inherit;resize:vertical;min-height:44px}
+  .asr{font-size:12px;color:var(--dim);background:#15161a;border:1px solid var(--line);
+       border-radius:6px;padding:7px 9px;min-height:44px}
+  audio{width:100%;height:34px;margin-top:2px}
+  .ab{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px}
+  .ab>div{flex:1;min-width:230px}
+  .ab .lab{margin-bottom:2px}
+  button{background:#26292f;color:var(--txt);border:1px solid var(--line);
+         border-radius:6px;padding:6px 14px;font-size:13px;cursor:pointer}
+  button:hover{border-color:#4a4f57}
+  button:disabled{opacity:.45;cursor:default}
+  button.pri{background:#1f4b73;border-color:#2b6ca3}
+  .acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .msg{font-size:12px;color:var(--dim);margin-left:auto}
+  .note{background:#1a2230;border:1px solid #24405c;border-radius:8px;
+        padding:10px 12px;font-size:12.5px;color:#bcd4ea;margin-bottom:16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>配音角色校对台</h1>
+  <div class="sub">9 个 GPT-SoVITS 角色的参考文本校对与 A/B 试听 · 改动直接写入 wenziqudong 的角色库</div>
+
+  <div class="note">
+    参考文本用来提取音素和 BERT 特征，<b>写错会让音色克隆质量下降</b>。
+    绿色的角色标注与音频一致；橙色的三处 ASR 和标注对不上，<b>需要你听一遍定夺</b>；
+    蓝色的两处我已按 ASR 改好，你可以对比「改前 / 当前」。
+    试听不会落盘，满意了再点保存。
+  </div>
+
+  <div class="bar">
+    <span id="st"><span class="dot" style="background:var(--dim)"></span>检查中…</span>
+    <input type="text" id="ttext" placeholder="试听用的句子">
+    <button id="reload">重新加载</button>
+  </div>
+
+  <div id="roles"></div>
+</div>
+
+<script>
+var DEFAULT_TEXT = "";
+var TTS_UP = false;
+
+function esc(s){
+  return String(s == null ? "" : s).replace(/[&<>"']/g, function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
+  });
+}
+
+function badge(r){
+  var b = [];
+  b.push('<span class="badge b-dim">' + r.ref_sec.toFixed(2) + 's 参考</span>');
+  if (r.changed) b.push('<span class="badge b-fix">已修改</span>');
+  else if (r.pending) b.push('<span class="badge b-warn">待确认</span>');
+  else b.push('<span class="badge b-ok">一致</span>');
+  return b.join(" ");
+}
+
+function abBlock(r){
+  var h = "";
+  var hasBefore = r.samples.indexOf(r.role + "_before.wav") >= 0;
+  var hasAlt = r.samples.indexOf(r.role + "_alt.wav") >= 0;
+  if (!hasBefore && !hasAlt) return "";
+  h += '<div class="ab">';
+  if (hasBefore){
+    h += '<div><div class="lab">改前（原始标注）</div>' +
+         '<audio controls preload="none" src="/audio/samples/' + r.role + '_before.wav"></audio></div>';
+  }
+  if (hasAlt){
+    h += '<div><div class="lab">候选（ASR 识别）</div>' +
+         '<audio controls preload="none" src="/audio/samples/' + r.role + '_alt.wav"></audio></div>';
+  }
+  h += '<div><div class="lab">当前' + (hasBefore ? '（已改）' : '（原始）') + '</div>' +
+       '<audio controls preload="none" src="/audio/samples/' + r.role + '_now.wav"></audio></div>';
+  h += '</div>';
+  return h;
+}
+
+function render(list){
+  var html = "";
+  for (var i = 0; i < list.length; i++){
+    var r = list[i];
+    html += '<div class="card" data-role="' + esc(r.role) + '">';
+    html += '<div class="head"><span class="name">' + esc(r.role) + '</span>' + badge(r) + '</div>';
+    html += '<div class="row">';
+    html += '<div class="fld"><div class="lab">当前 ref_text.txt（可编辑）</div>' +
+            '<textarea class="txt">' + esc(r.text) + '</textarea></div>';
+    html += '<div class="fld"><div class="lab">ASR 听出来的（对照用，不可编辑）</div>' +
+            '<div class="asr">' + esc(r.asr) + '</div></div>';
+    html += '</div>';
+    html += '<div class="row"><div class="fld">' +
+            '<div class="lab">原始参考音频 ref.wav</div>' +
+            '<audio controls preload="none" src="/audio/ref/' + esc(r.role) + '"></audio>' +
+            '</div></div>';
+    html += abBlock(r);
+    html += '<div class="acts">';
+    html += '<button class="pri act-synth"' + (TTS_UP ? '' : ' disabled') + '>试听当前文本</button>';
+    if (r.alt) html += '<button class="act-alt">填入 ASR 候选</button>';
+    html += '<button class="act-save">保存</button>';
+    html += '<button class="act-restore">还原原始</button>';
+    html += '<span class="msg"></span>';
+    html += '</div>';
+    html += '</div>';
+  }
+  document.getElementById("roles").innerHTML = html;
+  bind(list);
+}
+
+function bind(list){
+  var cards = document.querySelectorAll(".card");
+  for (var i = 0; i < cards.length; i++){
+    (function(card){
+      var role = card.getAttribute("data-role");
+      var r = null;
+      for (var j = 0; j < list.length; j++) if (list[j].role === role) r = list[j];
+      var msg = card.querySelector(".msg");
+      var ta = card.querySelector(".txt");
+
+      var bSynth = card.querySelector(".act-synth");
+      if (bSynth) bSynth.onclick = function(){
+        var t = document.getElementById("ttext").value.trim() || DEFAULT_TEXT;
+        msg.textContent = "合成中…";
+        bSynth.disabled = true;
+        var fd = new FormData();
+        fd.append("role", role);
+        fd.append("text", t);
+        fetch("/api/synth", {method:"POST", body:fd})
+          .then(function(x){ return x.json().then(function(j){
+            if (!x.ok) throw new Error(j.detail || ("HTTP " + x.status));
+            return j;
+          }); })
+          .then(function(j){
+            var box = card.querySelector(".ab");
+            var ins = '<div><div class="lab">刚才合成的句子</div>' +
+                      '<audio controls autoplay src="' + j.url + '"></audio></div>';
+            if (box) box.insertAdjacentHTML("beforeend", ins);
+            else card.querySelector(".acts").insertAdjacentHTML(
+                   "beforebegin", '<div class="ab">' + ins + '</div>');
+            msg.textContent = "已合成 " + Math.round(j.bytes/1024) + " KB";
+          })
+          .catch(function(e){ msg.textContent = "失败：" + e.message; })
+          .then(function(){ bSynth.disabled = !TTS_UP; });
+      };
+
+      var bAlt = card.querySelector(".act-alt");
+      if (bAlt) bAlt.onclick = function(){ ta.value = r.alt; msg.textContent = "已填入候选，可试听/保存"; };
+
+      card.querySelector(".act-save").onclick = function(){
+        var fd = new FormData();
+        fd.append("role", role);
+        fd.append("text", ta.value);
+        msg.textContent = "保存中…";
+        fetch("/api/save", {method:"POST", body:fd}).then(function(x){ return x.json(); })
+          .then(function(j){
+            msg.textContent = j.ok ? "已保存" : ("失败：" + (j.detail || ""));
+            if (j.ok) load();
+          })
+          .catch(function(e){ msg.textContent = "失败：" + e.message; });
+      };
+
+      card.querySelector(".act-restore").onclick = function(){
+        if (!window.confirm("把 " + role + " 的参考文本还原成原始备份？")) return;
+        var fd = new FormData();
+        fd.append("role", role);
+        msg.textContent = "还原中…";
+        fetch("/api/restore", {method:"POST", body:fd}).then(function(x){ return x.json(); })
+          .then(function(j){
+            msg.textContent = j.ok ? "已还原" : ("失败：" + (j.detail || ""));
+            if (j.ok) load();
+          })
+          .catch(function(e){ msg.textContent = "失败：" + e.message; });
+      };
+    })(cards[i]);
+  }
+}
+
+function load(){
+  return fetch("/api/roles").then(function(x){ return x.json(); }).then(function(d){
+    DEFAULT_TEXT = d.default_text || "";
+    TTS_UP = !!d.tts_up;
+    if (!document.getElementById("ttext").value)
+      document.getElementById("ttext").value = DEFAULT_TEXT;
+    var st = document.getElementById("st");
+    st.innerHTML = TTS_UP
+      ? '<span class="dot" style="background:var(--ok)"></span>18062 在线，可现场合成'
+      : '<span class="dot" style="background:var(--bad)"></span>18062 未启动，只能听已有素材';
+    render(d.roles);
+  });
+}
+
+document.getElementById("reload").onclick = load;
+load();
+</script>
+</body>
+</html>

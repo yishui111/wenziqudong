@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>缓存模式 / 调度顺序 实测台</title>
+<style>
+:root{
+  --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+  --txt:#e6e9ef; --dim:#9aa4b2; --acc:#4ea1ff; --ok:#3ddc97;
+  --warn:#ffb454; --bad:#ff6b6b;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);
+  font:14px/1.6 "Microsoft YaHei",-apple-system,"Segoe UI",sans-serif}
+.wrap{max-width:1120px;margin:0 auto;padding:18px 20px 60px}
+h1{font-size:19px;margin:0 0 4px}
+.sub{color:var(--dim);font-size:12.5px;margin-bottom:16px}
+.bar{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:12px 14px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:6px}
+.d-up{background:var(--ok)}.d-dn{background:var(--bad)}
+.btn{background:var(--panel2);color:var(--txt);border:1px solid var(--line);
+  border-radius:7px;padding:7px 14px;cursor:pointer;font-size:13px}
+.btn:hover{border-color:var(--acc)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.pri{background:var(--acc);border-color:var(--acc);color:#08121d;font-weight:600}
+.pill{background:var(--panel2);border:1px solid var(--line);border-radius:20px;
+  padding:4px 12px;font-size:12.5px;color:var(--dim)}
+.pill b{color:var(--txt)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:14px;margin-bottom:16px}
+.card h2{font-size:14.5px;margin:0 0 10px;color:var(--txt)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left}
+th{color:var(--dim);font-weight:500;font-size:12px}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+tr.sw td{background:rgba(255,180,84,.07)}
+.tag{display:inline-block;padding:1px 7px;border-radius:5px;font-size:11.5px;
+  background:var(--panel2);border:1px solid var(--line)}
+.tag.sw{background:rgba(255,180,84,.16);border-color:var(--warn);color:var(--warn)}
+select,input[type=text]{background:var(--panel2);color:var(--txt);
+  border:1px solid var(--line);border-radius:6px;padding:5px 8px;font-size:13px}
+input[type=text]{width:100%}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.kv{display:flex;gap:22px;flex-wrap:wrap;margin-top:8px}
+.kv div{background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+  padding:10px 16px;min-width:130px}
+.kv span{display:block;color:var(--dim);font-size:12px}
+.kv b{font-size:21px;font-variant-numeric:tabular-nums}
+.big-ok{color:var(--ok)}.big-bad{color:var(--bad)}
+audio{width:100%;height:30px;margin-top:4px}
+.seq{font-family:Consolas,monospace;font-size:12px;color:var(--dim);
+  word-break:break-all;line-height:1.8}
+.seq i{font-style:normal;background:var(--panel2);border:1px solid var(--line);
+  border-radius:4px;padding:1px 6px;margin-right:3px;color:var(--txt)}
+.seq i.hl{background:rgba(255,180,84,.16);border-color:var(--warn)}
+.note{background:rgba(78,161,255,.08);border-left:3px solid var(--acc);
+  padding:8px 12px;border-radius:0 6px 6px 0;color:var(--dim);font-size:12.5px}
+.warnbox{background:rgba(255,180,84,.09);border-left:3px solid var(--warn);
+  padding:8px 12px;border-radius:0 6px 6px 0;color:var(--warm);font-size:12.5px}
+#log{font-family:Consolas,monospace;font-size:12px;color:var(--dim);
+  white-space:pre-wrap;max-height:150px;overflow:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>缓存模式 / 调度顺序 实测台</h1>
+  <div class="sub">量化两件事：切一次音色到底亏多少秒；按角色分组合成能少切几次。跑的是 18062 上真实的 GPT-SoVITS。</div>
+
+  <div class="bar">
+    <span><i id="dot" class="dot d-dn"></i><span id="up">检测中…</span></span>
+    <span class="pill">缓存模式：<b id="mode">-</b></span>
+    <span class="pill">已驻留：<b id="cached">-</b></span>
+    <button class="btn" id="btnMode">切换为多角色常驻</button>
+    <button class="btn pri" id="btnPlan">① 算调度优化</button>
+    <button class="btn pri" id="btnAB">② 跑 A/B 实测</button>
+    <button class="btn" id="btnReload">刷新状态</button>
+  </div>
+
+  <div class="warnbox" id="warnbox" style="display:none"></div>
+
+  <div class="card">
+    <h2>台词表（按时间顺序 —— 这就是现在 pipeline 的真实合成顺序）</h2>
+    <table id="segs">
+      <thead><tr><th style="width:34px">#</th><th style="width:130px">角色</th><th>台词</th>
+        <th style="width:60px"></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div style="margin-top:10px"><button class="btn" id="btnAdd">+ 加一行</button>
+      <button class="btn" id="btnReset">恢复默认台词</button></div>
+  </div>
+
+  <div class="card" id="cardPlan" style="display:none">
+    <h2>① 调度优化：切换次数</h2>
+    <div class="grid2">
+      <div>
+        <div style="color:var(--dim);font-size:12.5px">按时间顺序（当前做法）</div>
+        <div class="seq" id="seqTime"></div>
+      </div>
+      <div>
+        <div style="color:var(--dim);font-size:12.5px">按角色分组（改法）</div>
+        <div class="seq" id="seqGroup"></div>
+      </div>
+    </div>
+    <div class="kv">
+      <div><span>当前切换次数</span><b id="swNow" class="big-bad">-</b></div>
+      <div><span>分组后切换次数</span><b id="swNew" class="big-ok">-</b></div>
+      <div><span>省掉</span><b id="swSave">-</b></div>
+    </div>
+    <div class="note" style="margin-top:10px">
+      分组只改「合成顺序」，最终音轨仍按时间轴拼装，成片不变。省下来的是每次切换时的清缓存 + 重载模型。
+    </div>
+  </div>
+
+  <div class="card" id="cardAB" style="display:none">
+    <h2>② A/B 实测：同一批台词，两种缓存模式</h2>
+    <div id="abRunning" style="display:none;color:var(--warn)">正在跑：<b id="abNow">-</b></div>
+    <div class="kv" id="abKv"></div>
+    <div class="grid2" style="margin-top:12px">
+      <div><div style="color:var(--dim);font-size:12.5px;margin-bottom:4px">逐段耗时（秒）</div>
+        <table id="tblAB"><thead><tr><th>#</th><th>角色</th><th>切换</th>
+          <th class="num">单角色</th><th class="num">多角色</th><th class="num">差</th></tr></thead>
+          <tbody></tbody></table></div>
+      <div><div style="color:var(--dim);font-size:12.5px;margin-bottom:4px">听一下（多角色模式产物）</div>
+        <div id="players"></div></div>
+    </div>
+    <div class="note" style="margin-top:10px">
+      为抵消冷启动影响，单角色模式跑两轮取平均；多角色模式跑一轮（第二轮本来就该快，那就是它的收益）。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>日志</h2>
+    <div id="log"></div>
+  </div>
+</div>
+
+<script>
+var ROLES = [];
+var SEGS = [];
+
+function $(id){ return document.getElementById(id); }
+function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function log(m){ var d=$("log"); d.textContent += m + "\n"; d.scrollTop = d.scrollHeight; }
+
+function renderSegs(){
+  var tb = $("segs").querySelector("tbody");
+  var h = "";
+  for(var i=0;i<SEGS.length;i++){
+    var s = SEGS[i];
+    h += "<tr>";
+    h += "<td style='color:var(--dim)'>" + (i+1) + "</td>";
+    h += "<td><select data-i='" + i + "' class='sel'>";
+    for(var r=0;r<ROLES.length;r++){
+      h += "<option value='" + esc(ROLES[r]) + "'" + (ROLES[r]===s.role?" selected":"") + ">" + esc(ROLES[r]) + "</option>";
+    }
+    h += "</select></td>";
+    h += "<td><input type='text' data-i='" + i + "' class='txt' value='" + esc(s.text) + "'></td>";
+    h += "<td><button class='btn' data-del='" + i + "'>删</button></td>";
+    h += "</tr>";
+  }
+  tb.innerHTML = h;
+  var sels = tb.querySelectorAll(".sel");
+  for(var a=0;a<sels.length;a++){ sels[a].onchange = function(){ SEGS[+this.dataset.i].role = this.value; }; }
+  var txts = tb.querySelectorAll(".txt");
+  for(var b=0;b<txts.length;b++){ txts[b].oninput = function(){ SEGS[+this.dataset.i].text = this.value; }; }
+  var dels = tb.querySelectorAll("[data-del]");
+  for(var c=0;c<dels.length;c++){ dels[c].onclick = function(){ SEGS.splice(+this.dataset.del,1); renderSegs(); }; }
+}
+
+function segsJson(){ return JSON.stringify(SEGS); }
+
+function showState(st){
+  if(st.tts_up){
+    $("dot").className = "dot d-up";
+    $("up").textContent = "18062 在线";
+    $("mode").textContent = st.multi ? "多角色常驻" : "单角色（切一次清一次）";
+    $("cached").textContent = (st.cache_count||0) + " 个";
+    $("btnMode").textContent = st.multi ? "切回单角色模式" : "切换为多角色常驻";
+    $("btnMode").disabled = false;
+    $("btnAB").disabled = false;
+    $("warnbox").style.display = st.multi ? "none" : "block";
+    if(!st.multi){
+      $("warnbox").textContent = "当前是单角色模式：每段换人都会清缓存 + 重载模型，这就是要量化的开销。";
+    }
+  }else{
+    $("dot").className = "dot d-dn";
+    $("up").textContent = "18062 未启动 —— 先跑 D:\\xm\\wenziqudong\\start.bat";
+    $("mode").textContent = "-"; $("cached").textContent = "-";
+    $("btnMode").disabled = true; $("btnAB").disabled = true;
+    $("warnbox").style.display = "block";
+    $("warnbox").textContent = "18062 没起来，只能算调度（①），跑不了实测（②）。";
+  }
+}
+
+function reload(){
+  return fetch("/api/state").then(function(r){ return r.json(); }).then(function(st){
+    ROLES = st.roles || [];
+    if(st.segs && (!SEGS || !SEGS.length)) SEGS = st.segs;
+    showState(st); renderSegs(); return st;
+  });
+}
+
+function post(url, kv){
+  var f = new FormData();
+  for(var k in kv){ f.append(k, kv[k]); }
+  return fetch(url, {method:"POST", body:f}).then(function(r){ return r.json(); });
+}
+
+function seqHtml(seq, hlFrom){
+  var h = "", prev = null;
+  for(var i=0;i<seq.length;i++){
+    var hl = (prev!==null && seq[i]!==prev) ? " hl" : "";
+    h += "<i class='" + hl.trim() + "'>" + esc(seq[i]) + "</i>";
+    prev = seq[i];
+  }
+  return h;
+}
+
+$("btnReload").onclick = function(){ reload(); };
+reload();
+$("btnMode").onclick = function(){
+  var isMulti = $("btnMode").textContent.indexOf("多角色") >= 0;
+  post("/api/mode", {multi: isMulti ? "1" : "0"}).then(function(st){
+    log("缓存模式 -> " + (st.multi ? "多角色常驻" : "单角色"));
+    return reload();
+  });
+};
+$("btnAdd").onclick = function(){
+  SEGS.push({role: ROLES[0]||"azhong", text:"测试台词"});
+  renderSegs();
+};
+$("btnReset").onclick = function(){ SEGS = []; reload(); };
+
+$("btnPlan").onclick = function(){
+  post("/api/plan", {segs: segsJson()}).then(function(p){
+    $("cardPlan").style.display = "block";
+    $("seqTime").innerHTML = seqHtml(p.time_order.seq);
+    $("seqGroup").innerHTML = seqHtml(p.grouped.seq);
+    $("swNow").textContent = p.time_order.switches;
+    $("swNew").textContent = p.grouped.switches;
+    var d = p.time_order.switches - p.grouped.switches;
+    $("swSave").textContent = d + " 次";
+    log("调度：时间序 " + p.time_order.switches + " 次切换 -> 分组 " + p.grouped.switches + " 次，省 " + d + " 次");
+  });
+};
+
+function kvBox(label, value, cls){
+  return "<div><span>" + esc(label) + "</span><b class='" + (cls||"") + "'>" + esc(value) + "</b></div>";
+}
+
+$("btnAB").onclick = function(){
+  $("btnAB").disabled = true;
+  $("abRunning").style.display = "block";
+  $("cardAB").style.display = "block";
+  $("abKv").innerHTML = ""; $("players").innerHTML = "";
+  $("tblAB").querySelector("tbody").innerHTML = "";
+  var runs = [];
+  function step(mode, label){
+    $("abNow").textContent = label;
+    log("跑 " + label + " …");
+    return post("/api/run", {multi: mode, segs: segsJson()}).then(function(r){
+      runs.push(r);
+      log("  完成：" + r.total + "s，切换 " + r.switches + " 次");
+    });
+  }
+  step("0", "第 1 轮 · 单角色（冷启动）")
+   .then(function(){ return step("1", "第 2 轮 · 多角色常驻"); })
+   .then(function(){ return step("0", "第 3 轮 · 单角色（热机）"); })
+   .then(function(){
+      var a1 = runs[0], b = runs[1], a2 = runs[2];
+      if(!a1 || !b || !a2){ log("有轮次失败，结果不完整"); return; }
+      var A = (a1.total + a2.total) / 2, B = b.total;
+      var save = A > 0 ? (A - B) / A * 100 : 0;
+      var per = a2.switches > 0 ? (A - B) / a2.switches : 0;
+      $("abKv").innerHTML =
+        kvBox("单角色（两轮平均）", A.toFixed(1) + "s", "big-bad") +
+        kvBox("多角色常驻", B.toFixed(1) + "s", "big-ok") +
+        kvBox("省下", save.toFixed(0) + "%", save > 0 ? "big-ok" : "big-bad") +
+        kvBox("每次切换约", per.toFixed(2) + "s", "");
+      var h = "";
+      for(var i = 0; i < a2.rows.length; i++){
+        var ra = a2.rows[i], rb = b.rows[i] || {};
+        var d = ra.sec - (rb.sec || 0);
+        var col = d > 0.15 ? "var(--bad)" : (d < -0.15 ? "var(--ok)" : "var(--dim)");
+        h += "<tr" + (ra.switched ? " class='sw'" : "") + ">";
+        h += "<td>" + ra.i + "</td><td>" + esc(ra.role) + "</td>";
+        h += "<td>" + (ra.switched ? "<span class='tag sw'>切换</span>" : "") + "</td>";
+        h += "<td class='num'>" + ra.sec.toFixed(2) + "</td>";
+        h += "<td class='num'>" + (rb.sec != null ? rb.sec.toFixed(2) : "-") + "</td>";
+        h += "<td class='num' style='color:" + col + "'>" + (d > 0 ? "+" : "") + d.toFixed(2) + "</td>";
+        h += "</tr>";
+      }
+      $("tblAB").querySelector("tbody").innerHTML = h;
+      var p = "";
+      for(var j = 0; j < b.rows.length; j++){
+        if(!b.rows[j].url) continue;
+        p += "<div style='margin-bottom:6px'><div style='color:var(--dim);font-size:12px'>"
+           + b.rows[j].i + " · " + esc(b.rows[j].role) + " · " + b.rows[j].sec.toFixed(2) + "s</div>"
+           + "<audio controls src='" + esc(b.rows[j].url) + "'></audio></div>";
+      }
+      $("players").innerHTML = p || "<span style='color:var(--dim)'>没有产物</span>";
+      log("A/B 完成：单角色 " + A.toFixed(1) + "s vs 多角色 " + B.toFixed(1) + "s，省 " + save.toFixed(0) + "%");
+   })
+   .catch(function(e){ log("A/B 失败：" + e); })
+   .then(function(){
+      $("abRunning").style.display = "none";
+      $("btnAB").disabled = false;
+   });
+};
+</script>
+</body>
+</html>
