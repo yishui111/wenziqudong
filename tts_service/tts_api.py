@@ -67,7 +67,7 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("wenziqudong_tts")
 
-# 服务日志双写：控制台（看门狗黑框窗口实时可见）+ tmp\tts_python.log（重启后排查用，每次启动覆盖）。
+# 服务日志双写：控制台（服务黑框窗口实时可见）+ tmp\tts_python.log（重启后排查用，每次启动覆盖）。
 # stdout/stderr（引擎 print、tqdm 进度条）通过 _Tee 一并进文件；uvicorn 日志在
 # 启动时用 log_config=None 关掉自带配置，统一走 root handler。
 _tts_log_path = os.path.join(TMP_ROOT, "tts_python.log")
@@ -545,7 +545,7 @@ td,th{border:1px solid #ccc;padding:6px 10px;text-align:left;font-size:14px}
   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
     <button id="btn">▶ 开始合成</button>
     <button id="btnFree" class="mini" title="清空已加载的角色模型，释放显存">释放显存</button>
-    <button id="btnReset" class="mini danger" title="页面/服务卡住时用：重启服务进程，约 10 秒自动恢复">♻ 重置服务</button>
+    <button id="btnStop" class="mini danger" title="彻底关闭服务进程，不会自动重启；再次使用请双击 start.bat">⏹ 关闭服务</button>
   </div>
   <div id="msg" class="msg"></div>
   <div id="result" style="display:none;margin-top:10px">
@@ -733,18 +733,18 @@ $('btnFree').addEventListener('click', async ()=>{
   }
 });
 
-// 一键重置：服务卡住时重启进程，看门狗 3 秒拉起，约 10 秒恢复
-$('btnReset').addEventListener('click', async ()=>{
-  if (!confirm('确定重置服务？\\n\\n服务进程将重启（看门狗自动拉起），约 10 秒后恢复，期间无法合成。')) return;
+// 彻底关闭服务：进程退出后绝不自动重启（本项目没有看门狗）；再次使用需双击 start.bat
+$('btnStop').addEventListener('click', async ()=>{
+  if (!confirm('确定彻底关闭服务？\\n\\n服务进程将退出，且不会自动重启。\\n再次使用请双击 start.bat。')) return;
   const msg = $('msg');
-  const waiting = '服务重置中，约 10 秒后自动恢复（本页无需刷新）…';
+  const waiting = '服务正在彻底关闭（不会自动重启）。再次使用请双击 start.bat。';
   try{
-    const r = await fetch('/api/reset', {method:'POST'});
+    const r = await fetch('/api/shutdown', {method:'POST'});
     const j = await r.json().catch(()=>({}));
-    if (!r.ok){ msg.className='msg err'; msg.textContent='无法重置：'+(j.detail || r.statusText); return; }
+    if (!r.ok){ msg.className='msg err'; msg.textContent='无法关闭：'+(j.detail || r.statusText); return; }
     msg.className='msg'; msg.textContent=waiting;
   }catch(e){
-    // 重置成功时进程退出瞬间请求可能断开，属正常；若服务彻底无响应，页面 10 秒轮询会提示
+    // 关闭成功时进程退出瞬间请求断开，属正常现象
     msg.className='msg'; msg.textContent=waiting;
   }
 });
@@ -872,39 +872,15 @@ def free_memory():
     return {"message": "已清空模型缓存并释放显存（再次合成时自动重新加载角色，实测约1-3秒）"}
 
 
-def _watchdog_alive():
-    """检查服务是否被看门狗托管。True=在托管；False=确认没托管；
-    None=无法判断（如没装 psutil，按托管处理，不阻断重置）。"""
-    try:
-        with open(os.path.join(TMP_ROOT, "tts_watchdog.pid"), encoding="utf-8-sig") as f:
-            wd_pid = int(json.load(f).get("watchdog") or 0)
-    except Exception:  # noqa: BLE001
-        return False  # 没有 pid 文件 = 看门狗没在跑
-    try:
-        import psutil
-        p = psutil.Process(wd_pid)
-        return p.is_running() and "powershell" in (p.name() or "").lower()
-    except Exception:  # noqa: BLE001
-        return None
-
-
-@app.post("/api/reset")
-def reset():
-    """卡住时一键重置：1 秒后退出进程，由启动脚本看门狗自动重启。
-    若服务不是看门狗托管的（如手动 python 启动、看门狗已死），退出将无法自动恢复，
-    此时拒绝重置并提示改用 stop.bat + start.bat。"""
-    if _watchdog_alive() is False:
-        raise HTTPException(
-            409,
-            "当前服务未由看门狗托管，重置后将不会自动重启。"
-            "请双击 stop.bat 停止后再双击 start.bat 启动（恢复看门狗托管）。",
-        )
-
+@app.post("/api/shutdown")
+def shutdown():
+    """彻底关闭服务：1 秒后退出进程。本项目没有看门狗，退出后绝不自动重启，
+    再次使用请双击 start.bat。"""
     def _do():
         time.sleep(1)
         os._exit(0)
     threading.Thread(target=_do, daemon=True).start()
-    return {"message": "服务即将重置重启，约 10 秒后恢复"}
+    return {"message": "服务即将彻底关闭（不会自动重启）；再次使用请双击 start.bat"}
 
 
 @app.get("/api/cache_status")
@@ -1139,23 +1115,25 @@ threading.Thread(target=_startup_warmup, daemon=True).start()
 
 
 def _watch_parent():
-    """父进程看护兜底：看门狗窗口被关闭/看门狗进程退出时，本服务在 3 秒内随之
-    退出，确保显卡/内存立即释放（Job 对象之外的第二道保险，Job 万一失效也不留孤儿）。
-    仅当父进程是 tts_watchdog 看门狗时启用，手动 python 启动不受影响。"""
+    """父进程看护兜底：启动窗口（tts_run.ps1）被关闭/窗口进程退出时，本服务在
+    3 秒内随之退出，确保显卡/内存立即释放（Job 对象之外的第二道保险，
+    Job 万一失效也不留孤儿）。仅当父进程是 tts_run.ps1 启动窗口时启用，
+    手动 python 启动不受影响。（兼容旧名 tts_watchdog，便于老版本过渡）"""
     try:
         import psutil
         parent = psutil.Process().parent()
-        if not parent or "tts_watchdog" not in " ".join(parent.cmdline() or []):
+        cmd = " ".join(parent.cmdline() or []) if parent else ""
+        if not parent or ("tts_run" not in cmd and "tts_watchdog" not in cmd):
             return
         ppid = parent.pid
     except Exception:  # noqa: BLE001
         return
-    logger.info("父进程看护已启动（看门狗 PID=%d，看门狗退出则服务随之退出）", ppid)
+    logger.info("父进程看护已启动（启动窗口 PID=%d，窗口退出则服务随之退出）", ppid)
     while True:
         try:
             psutil.Process(ppid).wait(0)  # 存活则立刻超时返回
         except psutil.NoSuchProcess:
-            logger.warning("看门狗进程(%d)已退出，服务随之退出并释放显卡/内存", ppid)
+            logger.warning("启动窗口进程(%d)已退出，服务随之退出并释放显卡/内存", ppid)
             os._exit(0)
         except Exception:  # noqa: BLE001
             pass

@@ -12,7 +12,7 @@
 ## 2. 关键结构
 
 - `tts_service\tts_api.py`：主服务（FastAPI，18062，内置网页界面 + OpenAI 兼容端点）
-- `tts_service\tts_watchdog.ps1`：看门狗（服务崩溃 3 秒自动重启；资源被占时每 60 秒重试不放弃）
+- `tts_service\tts_run.ps1`：启动窗口脚本（只把服务拉起一次；**无任何自动重启**，服务退出即彻底停止）
 - `tts_service\models\<角色名>\`：音色模型目录（自备，目录扫描自动识别）
 - `gptsovits\GPT-SoVITS\`、`runtime\`：第三方引擎/运行时，体积大不入库，见 `DEPLOY.md`
 - `tests\`：自研测试脚本；`tts_service\tmp\`：运行时临时文件/日志（不入库）
@@ -20,11 +20,11 @@
 
 ## 3. 工作方式
 
-- 启动：双击 `start.bat` 或 `一键启动文字驱动语音.bat`（防重复双击、看门狗托管、就绪自动开浏览器）；
+- 启动：双击 `start.bat` 或 `一键启动文字驱动语音.bat`（防重复双击、就绪自动开浏览器）；
   端口**固定 18062**、绝不自动漂移（对外接口地址必须稳定）；若 18062 被其他程序占用则明确报错退出，绝不杀其他项目的进程
 - 服务在前台黑框窗口运行，日志实时滚动（同时写 `tts_service\tmp\tts_python.log`，stdout/stderr 已合并且由 tts_api.py 自身双写；旧 `.err` 文件已废弃）
-- 停止：双击 `stop.bat` 或 `关闭文字驱动语音.bat`（先杀看门狗再杀 python，关闭后不会自动重启）；**直接关闭服务窗口亦可**——python 由 Windows Job 对象（KILL_ON_JOB_CLOSE）托管，看门狗一死内核立即终止服务，显卡/内存随之释放，不留孤儿进程；tts_api.py 内另有父进程看护线程兜底
-- 显卡/内存被其他 AI 程序暂时占满导致启动失败时，看门狗每 60 秒自动重试，不会放弃退出
+- 停止：双击 `stop.bat` 或 `关闭文字驱动语音.bat`（按路径清扫本项目全部相关进程并**验证端口已释放**，关闭后绝不自动重启）；**直接关闭服务窗口亦可**——python 由 Windows Job 对象（KILL_ON_JOB_CLOSE）托管，窗口一死内核立即终止服务，显卡/内存随之释放，不留孤儿进程；tts_api.py 内另有父进程看护线程兜底；网页界面也有「⏹ 关闭服务」按钮
+- **服务绝不允许自动启动/自动重启**（2026-09-20 按用户要求移除旧"看门狗"）：只有用户双击 start.bat 才启动；崩溃/资源不足导致启动失败时脚本直接报错退出，等资源空出来由用户重新双击启动，禁止恢复任何自动拉起、自动重试逻辑
 - 自检：`GET /health`、`GET /models`；`python tests\test_tts_client.py` 冒烟合成
 - OpenAI 兼容端点（供 Open WebUI 等调用）：`POST /v1/audio/speech`（JSON {model, input, voice, speed} → mp3）、
   `GET /v1/audio/voices`、`GET /v1/models`
@@ -56,7 +56,7 @@
 - 文档与注释使用简体中文；用户当场说的话优先级最高。
 ---
 ### 关键点（2026-09-02 上传整理补充）
-- tts_service/tts_api.py = 自研 FastAPI 封装（端口 18062；网页 + OpenAI 兼容 /v1/audio/speech + 看门狗），字节原样入库
+- tts_service/tts_api.py = 自研 FastAPI 封装（端口 18062；网页 + OpenAI 兼容 /v1/audio/speech + 启动窗口脚本），字节原样入库
 - 引擎/模型/端口/设备全部可用环境变量覆盖：GSV_ROOT / GSV_MODELS_DIR / TTS_API_PORT / TTS_DEVICE
 - 大件不入库：gptsovits\GPT-SoVITS(~4.6GB)、runtime\py312+ffmpeg(~9.6GB)、tts_service\models 音色(~1.9GB 真人音色)；摆位见 DEPLOY
 - 原中文 bat 已重写为 ASCII/CRLF/无 BOM；一键启动文字驱动语音.bat 为兼容壳

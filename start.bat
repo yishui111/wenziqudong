@@ -1,35 +1,36 @@
 @echo off
 rem ============================================================
 rem  Wenziqudong Text-to-Speech (GPT-SoVITS) - one-click start
-rem  - PORT: FIXED at 18062. This project's public API address must never
-rem    change, so it does NOT auto-switch ports. 18062 sits OUTSIDE the
-rem    Windows dynamic port range (1024-15000 on this machine), so the OS
-rem    never hands it to a random outbound connection. Sibling project
-rem    duihuamoxing uses 8061/18060, fully separated. If 18062 is taken
-rem    by another program, start.bat reports it and exits - it NEVER
-rem    kills another program.
-rem    Emergency override only (not normal use):
-rem        set TTS_API_PORT=8070
-rem  - guards against double-click: detects an already-running copy
-rem    of THIS service or a starting watchdog, then exits.
-rem  - if an orphaned copy of THIS project runs without watchdog,
-rem    stops it and restarts under watchdog protection.
-rem  - kills leftover python of THIS copy only (path-matched), then
-rem    starts the watchdog (tts_service\tts_watchdog.ps1) which
-rem    auto-restarts the service if it crashes (3s).
-rem  - waits until /health is up, then opens the browser.
+rem  Behavior contract (do NOT revert):
+rem    - The service runs ONLY when the user starts it with this
+rem      script. NOTHING auto-starts it, and NOTHING restarts it
+rem      after it stops. The old auto-restart watchdog is gone on
+rem      purpose: stopped must mean stopped, permanently.
+rem    - PORT: FIXED at 18062. This project's public API address
+rem      must never change, so it does NOT auto-switch ports.
+rem      18062 sits OUTSIDE the Windows dynamic port range, so the
+rem      OS never hands it to a random outbound connection.
+rem      Sibling project duihuamoxing uses 8061/18060, separated.
+rem      Emergency override only (not normal use):
+rem          set TTS_API_PORT=8070
+rem    - If 18062 is held by another program: report and exit.
+rem      This script NEVER kills another program's process.
+rem    - The service runs in a visible window (tts_service\tts_run.ps1)
+rem      with live logs. Closing that window stops the service for good.
+rem    - Stop for good: stop.bat / close the service window /
+rem      the web page "stop service" button. No auto-restart ever.
 rem ============================================================
 setlocal
 title WenZiQuDong TTS - Start
 set "ROOT=%~dp0"
-set "PIDFILE=%ROOT%tts_service\tmp\tts_watchdog.pid"
+set "PIDFILE=%ROOT%tts_service\tmp\tts_service.pid"
 set "PORTFILE=%ROOT%tts_service\tmp\port.txt"
 if not defined TTS_DEVICE set "TTS_DEVICE=cuda"
 
 rem ---------- 0) FIXED port ----------
 rem This project always serves on 18062 - the public API address must stay
-rem stable for integrators. No auto-switching, no port scan, no port.txt
-rem lookup. Override only if 18062 is genuinely unusable on a new machine.
+rem stable for integrators. No auto-switching, no port scan. Override only
+rem if 18062 is genuinely unusable on a new machine.
 if not defined TTS_API_PORT set "TTS_API_PORT=18062"
 
 echo ============================================
@@ -39,9 +40,9 @@ echo.
 
 rem ---------- 1) is anything answering on our port? ----------
 powershell -NoProfile -Command "try { $null = Invoke-RestMethod -Uri 'http://127.0.0.1:%TTS_API_PORT%/health' -TimeoutSec 3; exit 0 } catch { exit 1 }"
-if not %errorlevel% equ 0 goto start_fresh
+if not %errorlevel% equ 0 goto cleanup
 
-rem ---------- 1a) is it THIS copy of the service? ----------
+rem ---------- 1a) ours or foreign? ----------
 powershell -NoProfile -Command "try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:%TTS_API_PORT%/health' -TimeoutSec 3; if ($r.service -eq 'wenziqudong-tts') { exit 0 }; Write-Output ('  foreign service on port: ' + $r.service); exit 9 } catch { exit 1 }"
 if %errorlevel% equ 9 (
     echo  Port %TTS_API_PORT% is held by a DIFFERENT program. This script will NOT kill it.
@@ -50,40 +51,32 @@ if %errorlevel% equ 9 (
     echo  Fix B: run this project on another port for this session:
     echo     set TTS_API_PORT=8070
     echo     start.bat
-    timeout /t 15 >nul
+    ping -n 16 127.0.0.1 >nul
     exit /b 1
 )
+if %errorlevel% equ 1 goto cleanup
 
-rem ---------- 1b) ours: only exit if a live watchdog protects it ----------
-powershell -NoProfile -Command "if (Test-Path '%PIDFILE%') { $j = Get-Content '%PIDFILE%' -Raw | ConvertFrom-Json; if ($j.watchdog) { $wp = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $j.watchdog) -ErrorAction SilentlyContinue; if ($wp -and $wp.Name -eq 'powershell.exe' -and $wp.CommandLine -match 'tts_watchdog') { exit 0 } } }; exit 1"
-if %errorlevel% equ 0 (
-    echo  Service already running - no need to start again.
-    echo  Watchdog is protecting it - auto-restart on crash.
-    echo  Double-clicking again will NOT create a second service.
-    timeout /t 5 >nul 2>nul
-    exit /b 0
-)
-echo  Orphaned copy of this service detected - running without watchdog.
-echo  Stopping it and restarting under watchdog protection...
+echo  Service is already running - no need to start again.
+echo  This script never starts a second copy.
+echo  To stop it for good, run stop.bat or close the service window.
+ping -n 6 127.0.0.1 >nul
+exit /b 0
 
-:start_fresh
-rem ---------- 2) watchdog alive - service still loading? ----------
-powershell -NoProfile -Command "if (Test-Path '%PIDFILE%') { $j = Get-Content '%PIDFILE%' -Raw | ConvertFrom-Json; if ($j.watchdog) { $wp = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $j.watchdog) -ErrorAction SilentlyContinue; if ($wp -and $wp.Name -eq 'powershell.exe' -and $wp.CommandLine -match 'tts_watchdog') { Write-Output ('Watchdog alive (PID ' + $j.watchdog + '), service is loading'); exit 0 } } }; exit 1"
-if %errorlevel% equ 0 (
-    echo  Service is starting - first model load takes 5-10 minutes.
-    echo  Please wait and do not double-click again.
-    timeout /t 5 >nul 2>nul
-    exit /b 0
-)
-
-rem ---------- 3) clean up leftover python of THIS copy only ----------
-echo Starting service...
-powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -like '*%ROOT%tts_service\tts_api.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+:cleanup
+rem ---------- 2) clean up leftovers of THIS project only ----------
+rem Kills a forgotten service window and any orphan python of this copy
+rem from an earlier session. Path-matched: sibling projects and foreign
+rem programs are never touched. There is NO auto-restart anywhere; this
+rem only removes leftovers so this start begins from a clean state.
+echo Cleaning up leftovers of this project (if any)...
+powershell -NoProfile -Command "$root='%ROOT%'; Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | Where-Object { $_.CommandLine -and ($_.CommandLine -like ('*' + $root + 'tts_service\tts_run.ps1*') -or $_.CommandLine -like ('*' + $root + 'tts_service\tts_watchdog.ps1*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -and $_.CommandLine -like ('*' + $root + 'tts_service\tts_api.py*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 if exist "%PIDFILE%" del /f /q "%PIDFILE%"
+if exist "%ROOT%tts_service\tmp\tts_watchdog.pid" del /f /q "%ROOT%tts_service\tmp\tts_watchdog.pid"
+ping -n 3 127.0.0.1 >nul
 
-rem ---------- 3b) after our own leftovers are gone, is the port still taken? ----------
-rem Fixed port means we never drift. If a foreign program holds 18062, refuse
-rem to start and tell the user, instead of silently moving to another port.
+rem ---------- 3) is the port still taken (by a foreign program)? ----------
+rem Fixed port means we never drift. If a foreign program holds 18062,
+rem refuse to start and tell the user, instead of silently moving ports.
 powershell -NoProfile -Command "if (Get-NetTCPConnection -LocalPort %TTS_API_PORT% -State Listen -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
 if %errorlevel% equ 0 (
     echo  ERROR: port %TTS_API_PORT% is still in use by another program.
@@ -92,14 +85,15 @@ if %errorlevel% equ 0 (
     echo  Fix B: run on another port for this session:
     echo     set TTS_API_PORT=8070
     echo     start.bat
-    timeout /t 20 >nul 2>nul
+    ping -n 21 127.0.0.1 >nul
     exit /b 1
 )
 
-rem ---------- 4) launch watchdog in a visible console window ----------
-rem The window shows live service logs; closing that window stops the service.
+rem ---------- 4) open the service window ----------
+rem The window shows live service logs; closing that window stops the
+rem service permanently (no auto-restart, GPU memory freed immediately).
 echo Opening the service window - live logs there, closing it stops the service...
-start "WenZiQuDong TTS" powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%tts_service\tts_watchdog.ps1"
+start "WenZiQuDong TTS" powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%tts_service\tts_run.ps1"
 
 rem ---------- 5) wait until service is ready, then open browser ----------
 echo.
@@ -110,21 +104,25 @@ set /a tries+=1
 if %tries% gtr 60 goto notready
 powershell -NoProfile -Command "try { $null = Invoke-RestMethod -Uri 'http://127.0.0.1:%TTS_API_PORT%/health' -TimeoutSec 3; exit 0 } catch { exit 1 }" >nul 2>&1
 if %errorlevel% equ 0 goto ready
-timeout /t 10 /nobreak >nul 2>nul
+ping -n 11 127.0.0.1 >nul
 goto waitloop
 
 :ready
 echo  Service is ready.
 echo    UI      : http://127.0.0.1:%TTS_API_PORT%/
 echo    health  : http://127.0.0.1:%TTS_API_PORT%/health
-echo    stop    : run stop.bat - or just close the service window
+echo    stop    : run stop.bat, close the service window, or use the web page button
 >"%PORTFILE%" echo %TTS_API_PORT%
-timeout /t 2 >nul 2>nul
+ping -n 3 127.0.0.1 >nul
 start "" "http://127.0.0.1:%TTS_API_PORT%/"
 exit /b 0
 
 :notready
 echo  Service is not ready yet after 10 minutes.
+echo  NOTE: the service does NOT auto-retry. If it exited (for example
+echo  because GPU/RAM was busy with other AI programs), just run
+echo  start.bat again once the resources are free.
 echo  Open http://127.0.0.1:%TTS_API_PORT%/health in your browser later.
 echo  See logs under tts_service\tmp\ for details.
+ping -n 11 127.0.0.1 >nul
 exit /b 0

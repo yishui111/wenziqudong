@@ -1,35 +1,34 @@
 ﻿# ============================================================
-# 文字驱动语音服务 看门狗（由 start.bat 调用，前台控制台窗口运行）
-# 功能：
-#   1. 在本窗口前台启动 tts_api.py：服务运行日志实时显示在本窗口
-#      （文件日志由 tts_api.py 自己双写 tmp\tts_python.log，每次启动覆盖）
-#   2. 写 pid 文件 tts_service\tmp\tts_watchdog.pid：
-#      { watchdog: 看门狗PID, python: 服务PID, started: 启动时间 }
-#   3. python 异常退出后 3 秒自动重启；连续 3 次 30 秒内快速退出
-#      则等 60 秒后继续重试、不放弃（常见原因是 18062 被占用，
-#      或显卡/内存被其它 AI 程序暂时占满）
-#   4. **关闭本窗口 = 看门狗 + 服务一起结束**：python 被 Windows Job
-#      对象托管（KILL_ON_JOB_CLOSE），看门狗进程一死，内核立即终止
-#      python 并释放显卡/内存；tts_api.py 内另有父进程看护线程兜底
+# 文字驱动语音服务 启动窗口（由 start.bat 打开，前台控制台运行）
+# 行为约定（重要，勿再引入自动重启）：
+#   1. 只启动一次：本脚本只把 tts_api.py 拉起一次。服务退出后（无论正常
+#      退出、报错还是被停止）只打印退出原因，绝不自动重启——
+#      再次启动必须由用户重新双击 start.bat。服务只随用户手动启动而启动。
+#   2. 写 pid 文件 tmp\tts_service.pid：{ service: 服务PID, started: 启动时间 }
+#      （仅作记录；stop.bat 以进程命令行匹配为准，不依赖本文件）
+#   3. 关闭本窗口 = 服务一起结束：python 被 Windows Job 对象托管
+#      （KILL_ON_JOB_CLOSE），本窗口进程一死，内核立即终止 python 并释放
+#      显卡/内存；tts_api.py 内另有父进程看护线程兜底。
+#   4. 停止方式任选其一：双击 stop.bat / 关闭本窗口 / 网页「关闭服务」按钮。
 # 完全自包含：运行时/ffmpeg 均为项目内置（runtime\py312 / runtime\ffmpeg）
 # ============================================================
 $ErrorActionPreference = 'Continue'
-try { $Host.UI.RawUI.WindowTitle = 'WenZiQuDong 文字驱动语音 - 关闭此窗口即停止服务' } catch {}
+try { $Host.UI.RawUI.WindowTitle = 'WenZiQuDong 文字驱动语音 - 关闭此窗口即彻底停止服务(不会自动重启)' } catch {}
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root      = Split-Path -Parent $scriptDir
 # 运行时/ffmpeg 均为项目内置（完全自包含，随项目复制即用）
 $py        = Join-Path (Join-Path $root 'runtime\py312') 'python.exe'
 $api       = Join-Path $scriptDir 'tts_api.py'
-$pidFile   = Join-Path $scriptDir 'tmp\tts_watchdog.pid'
-$logFile   = Join-Path $scriptDir 'tmp\tts_watchdog.log'
+$pidFile   = Join-Path $scriptDir 'tmp\tts_service.pid'
+$logFile   = Join-Path $scriptDir 'tmp\tts_run.log'
 
 New-Item -ItemType Directory -Force -Path (Split-Path $pidFile) | Out-Null
 # 与一键启动 bat 保持一致：ffmpeg 进 PATH（项目内置）
 $env:PATH = "$root\runtime\ffmpeg\bin;$env:PATH"
 
 function Write-Log([string]$m) {
-    # 看门狗日志封顶 1MB：超过则只留最后 200 行，防止无限增长
+    # 日志封顶 1MB：超过则只留最后 200 行，防止无限增长
     if ((Test-Path $logFile) -and ((Get-Item $logFile).Length -gt 1MB)) {
         $tail = Get-Content $logFile -Tail 200 -ErrorAction SilentlyContinue
         Set-Content -Path $logFile -Value $tail -Encoding UTF8
@@ -39,9 +38,9 @@ function Write-Log([string]$m) {
     Write-Host $line
 }
 
-Write-Log "watchdog starting (PID=$PID)..."
+Write-Log "launcher starting (PID=$PID)..."
 
-# Windows Job 对象：看门狗进程退出时内核自动终止其中所有进程（含 python 及其子进程）
+# Windows Job 对象：本窗口进程退出时内核自动终止其中所有进程（含 python 及其子进程）
 if (-not ('WzdJob' -as [type])) {
     Add-Type -TypeDefinition @"
 using System;
@@ -101,42 +100,32 @@ if ($wzdJob -eq [IntPtr]::Zero) {
     }
 }
 
-Write-Log "服务日志实时显示在本窗口；关闭本窗口 = 看门狗和服务一起停止。"
+Write-Log "服务日志实时显示在本窗口；关闭本窗口 = 服务彻底停止，不会自动重启。"
 
-$quickFail = 0
-while ($true) {
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    # -NoNewWindow：python 与看门狗共用本控制台，日志实时滚动；文件日志由 tts_api.py 双写
-    $proc = Start-Process -FilePath $py -ArgumentList @('-u', ('"' + $api + '"')) -NoNewWindow -PassThru
-    if ($wzdJob -ne [IntPtr]::Zero) {
-        try { [void][WzdJob]::AssignProcessToJobObject($wzdJob, $proc.Handle) } catch { Write-Log "job assign failed: $_" }
-    }
-    @{
-        watchdog = $PID
-        python   = $proc.Id
-        started  = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-    } | ConvertTo-Json | Set-Content -Path $pidFile -Encoding UTF8
-    Write-Log ("service started (python PID=" + $proc.Id + ")")
-    $proc.WaitForExit()
-    $sw.Stop()
-    $code = $proc.ExitCode
-    Write-Log ("service exited (code=" + $code + ", ran " + [int]$sw.Elapsed.TotalSeconds + "s)")
-    # 把 python 最后 20 行输出写入看门狗日志，便于排查
-    $outLog = Join-Path $scriptDir 'tmp\tts_python.log'
-    if (Test-Path $outLog) {
-        $tail = (Get-Content $outLog -Tail 20 -ErrorAction SilentlyContinue) -join ' | '
-        if ($tail) { Write-Log ("python 输出末尾: " + $tail) }
-    }
-
-    if ($sw.Elapsed.TotalSeconds -lt 30) { $quickFail++ } else { $quickFail = 0 }
-    if ($quickFail -ge 3) {
-        # 连续快速失败多为显卡/内存被其它程序暂时占用，等一段再试；关闭本窗口随时可停止
-        Write-Log "连续 3 次快速失败（多为显卡/内存被其它程序暂时占用），60 秒后继续重试；关闭本窗口即可停止。"
-        Start-Sleep -Seconds 60
-        $quickFail = 0
-    }
-    Write-Log "3 秒后自动重启服务..."
-    Start-Sleep -Seconds 3
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+# -NoNewWindow：python 与本窗口共用控制台，日志实时滚动；文件日志由 tts_api.py 双写
+$proc = Start-Process -FilePath $py -ArgumentList @('-u', ('"' + $api + '"')) -NoNewWindow -PassThru
+if ($wzdJob -ne [IntPtr]::Zero) {
+    try { [void][WzdJob]::AssignProcessToJobObject($wzdJob, $proc.Handle) } catch { Write-Log "job assign failed: $_" }
+}
+@{
+    service = $proc.Id
+    started = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+} | ConvertTo-Json | Set-Content -Path $pidFile -Encoding UTF8
+Write-Log ("service started (python PID=" + $proc.Id + ")；服务退出后不会自动重启。")
+$proc.WaitForExit()
+$sw.Stop()
+$code = $proc.ExitCode
+Write-Log ("service exited (code=" + $code + ", ran " + [int]$sw.Elapsed.TotalSeconds + "s)")
+# 把 python 最后 20 行输出写进本日志，便于排查退出原因
+$outLog = Join-Path $scriptDir 'tmp\tts_python.log'
+if (Test-Path $outLog) {
+    $tail = (Get-Content $outLog -Tail 20 -ErrorAction SilentlyContinue) -join ' | '
+    if ($tail) { Write-Log ("python 输出末尾: " + $tail) }
 }
 Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
-Write-Log "watchdog exit"
+Write-Log "==============================================="
+Write-Log "服务已彻底退出（不会自动重启）。"
+Write-Log "再次使用请双击 start.bat；本窗口现在可以直接关闭。"
+Write-Log "==============================================="
+Read-Host "按回车键关闭本窗口"
