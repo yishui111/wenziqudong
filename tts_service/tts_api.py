@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-文字驱动语音服务（独立项目，完全自包含）
+文字变声音服务（独立项目，完全自包含）
 =============================================================
 输入文字 -> 用训练好的 GPT-SoVITS 音色模型合成语音（TTS），快且自然。
 
@@ -486,7 +486,7 @@ from fastapi import FastAPI, Form, HTTPException, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import HTMLResponse, Response  # noqa: E402
 
-app = FastAPI(title="文字驱动语音（GPT-SoVITS TTS）")
+app = FastAPI(title="文字变声音（GPT-SoVITS TTS）")
 
 # NOTICE: 本服务对外暴露接口（见项目根目录《接口文档.md》），放开浏览器跨域，
 # 其他网页前端（AIRI 数字人 localhost:5173 等）可直接调用。本服务无 Cookie/鉴权，
@@ -503,7 +503,7 @@ INDEX_HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>文字驱动语音</title>
+<title>文字变声音</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔊</text></svg>">
 <style>
 body{font-family:"Microsoft YaHei",sans-serif;max-width:820px;margin:24px auto;padding:0 16px;color:#222}
@@ -526,7 +526,7 @@ td,th{border:1px solid #ccc;padding:6px 10px;text-align:left;font-size:14px}
 </style>
 </head>
 <body>
-<h1>文字驱动语音</h1>
+<h1>文字变声音</h1>
 <div class="card">
   <label>输入文字（<span id="cnt">0/1000</span>，Ctrl+Enter 直接合成）</label>
   <textarea id="text" maxlength="1000" placeholder="例如：大家好，我是雷军。"></textarea>
@@ -650,7 +650,7 @@ async function loadModels(){
     const msg = $('msg');
     if (msg && msg.textContent.indexOf('合成') === -1){
       msg.className='msg err';
-      msg.textContent='⚠ 无法连接服务：服务可能正在启动（首次加载约 5-10 分钟）或已停止。若长时间无响应，请到文字驱动项目目录（wenziqudong）双击「一键启动文字驱动语音.bat」启动。';
+      msg.textContent='⚠ 无法连接服务：服务可能正在启动（首次加载约 5-10 分钟）或已停止。若长时间无响应，请到文字变声音项目目录（wenziqudong）双击「一键启动文字变声音.bat」启动。';
     }
   }
 }
@@ -695,7 +695,7 @@ $('btn').addEventListener('click', async ()=>{
     const netErr = /Failed to fetch|NetworkError|Load failed|ECONNREFUSED|fetch failed|ERR_CONNECTION/i.test(String((e && e.message) || e));
     msg.className='msg err';
     msg.textContent = netErr
-      ? '无法连接服务：服务可能正在启动（首次加载模型约 5-10 分钟）或已停止。请稍候刷新页面重试；若长时间无响应，请到文字驱动项目目录（wenziqudong）双击「一键启动文字驱动语音.bat」启动。'
+      ? '无法连接服务：服务可能正在启动（首次加载模型约 5-10 分钟）或已停止。请稍候刷新页面重试；若长时间无响应，请到文字变声音项目目录（wenziqudong）双击「一键启动文字变声音.bat」启动。'
       : '合成失败：'+e.message;
   }
   finally{ clearInterval(timer); btn.disabled = false; }

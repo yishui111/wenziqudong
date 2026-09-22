@@ -11,7 +11,7 @@ try {
     $models = (Invoke-RestMethod "$base/models" -TimeoutSec 10).models
 } catch {
     Add-Content $logFile ("无法连接服务 $base : " + $_.Exception.Message) -Encoding UTF8
-    Write-Output "无法连接服务 $base ，请先启动服务（一键启动文字驱动语音.bat）"
+    Write-Output "无法连接服务 $base ，请先启动服务（一键启动文字变声音.bat）"
     exit 1
 }
 $roles = @($models | Where-Object { $_.ready } | ForEach-Object { $_.name })

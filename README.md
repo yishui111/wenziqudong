@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🔊 文字驱动语音（GPT-SoVITS TTS）
+# 🔊 文字变声音（GPT-SoVITS TTS）
 
 > ⭐ **喜欢这个项目？请先点个 Star 支持一下，让更多人看到！** ⭐
 
@@ -16,7 +16,7 @@
 
 ## ✨ 项目简介
 
-这是一个**自研的文字驱动语音（TTS）服务封装**（`tts_service/tts_api.py`，FastAPI，端口 18062）：
+这是一个**自研的文字变声音（TTS）服务封装**（`tts_service/tts_api.py`，FastAPI，端口 18062）：
 把训练好的 GPT-SoVITS 音色模型变成「复制进目录即自动识别、输入文字即可合成」的独立服务，只做**推理**，不做训练。
 
 - **角色热加载**：音色模型按「目录扫描」自动发现（`tts_service\models\<角色名>\`），复制进来立刻可用，无需改代码、无需重启
@@ -47,10 +47,10 @@ wenziqudong/
 ├── tests/                    # 自研测试脚本（TTS 冒烟、换角色、官方直测对比等）
 ├── gptsovits/GPT-SoVITS/     # 第三方推理引擎（自行下载，见下方大件表）
 ├── runtime/                  # Python 3.12 + ffmpeg（自行准备，见大件表）
-├── start.bat                 # 通用启动入口（等价双击「一键启动文字驱动语音.bat」）
+├── start.bat                 # 通用启动入口（等价双击「一键启动文字变声音.bat」）
 ├── stop.bat                  # 通用停止入口
-├── 一键启动文字驱动语音.bat     # 原版一键启动（自动开浏览器）
-├── 关闭文字驱动语音.bat         # 原版一键停止
+├── 一键启动文字变声音.bat     # 原版一键启动（自动开浏览器）
+├── 关闭文字变声音.bat         # 原版一键停止
 ├── DEPLOY.md                 # 新电脑完整部署步骤（大件下载/摆放、从零安装）
 ├── 部署方案.md                 # 原部署笔记（浓缩版）
 ├── requirements.txt          # 本服务直接依赖
@@ -81,7 +81,7 @@ cd wenziqudong
 ### 3. 启动
 
 ```bash
-# Windows：双击 start.bat（等价：双击「一键启动文字驱动语音.bat」）
+# Windows：双击 start.bat（等价：双击「一键启动文字变声音.bat」）
 start.bat
 ```
 
@@ -135,7 +135,7 @@ curl -X POST -H "Content-Type: application/json" -d "{\"model\":\"liejun\",\"inp
 - **Q：双击启动没反应 / 页面打不开？** A：首次加载 torch 与模型约需 5–10 分钟，期间 `/health` 不通属正常；服务日志在 `tts_service\tmp\`（`tts_python.log` / `tts_run.log`），可查看是否缺引擎/模型（先按 DEPLOY.md 摆好 `gptsovits\GPT-SoVITS` 与音色模型）。若显卡/内存被其他 AI 程序暂时占满，服务会直接报错退出（**不会自动重试**），等资源空出来重新双击 start.bat 即可。
 - **Q：下拉框没有角色 / 角色显示「缺文件」？** A：每个角色目录必须 4 件齐全（`<名>.ckpt`、`<名>.pth`、`ref.wav`、`ref_text.txt`），目录放进 `tts_service\models\` 后 `GET /models` 即热刷新，无需重启。
 - **Q：合成漏字 / 跳读？** A：多为参考音频问题：`ref.wav` 建议 3–10 秒干净人声，`ref_text.txt` 必须与音频内容一字不差。本服务已默认保守采样参数（top_k 12 / top_p 0.9 / temperature 0.7）+ 20 字分句，可大幅缓解。
-- **Q：`Failed to fetch`？** A：服务未就绪或已停止。等就绪后刷新页面；或到项目目录双击「一键启动文字驱动语音.bat」。
+- **Q：`Failed to fetch`？** A：服务未就绪或已停止。等就绪后刷新页面；或到项目目录双击「一键启动文字变声音.bat」。
 - **Q：想换 GPU/CPU？** A：启动前 `set TTS_DEVICE=cpu` 再双击启动脚本（默认 cuda，需显卡）；CPU 不吃显存但合成稍慢。
 
 ## ⚠️ 注意事项

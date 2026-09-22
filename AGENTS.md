@@ -1,11 +1,11 @@
-# 项目约定（wenziqudong 文字驱动语音）
+# 项目约定（wenziqudong 文字变声音）
 
 > 本文件随项目分发：把整个项目文件夹复制到任意电脑后，这里的约定继续生效。
 > 具体项目的指令优先级高于全局约定，用户当场说的话优先级最高。
 
 ## 1. 项目概述
 
-文字驱动语音服务（独立项目，固定端口 18062）：输入文字 → 用训练好的 GPT-SoVITS 音色模型合成语音。
+文字变声音服务（独立项目，固定端口 18062）：输入文字 → 用训练好的 GPT-SoVITS 音色模型合成语音。
 只做推理；音色模型由训练方（GPT-SoVITS few-shot 训练）产出「4 件套」后，用户手动复制到
 `tts_service\models\<角色名>\`，本服务目录扫描自动识别，不做训练、不接收自动推送。
 
@@ -16,14 +16,14 @@
 - `tts_service\models\<角色名>\`：音色模型目录（自备，目录扫描自动识别）
 - `gptsovits\GPT-SoVITS\`、`runtime\`：第三方引擎/运行时，体积大不入库，见 `DEPLOY.md`
 - `tests\`：自研测试脚本；`tts_service\tmp\`：运行时临时文件/日志（不入库）
-- `一键启动文字驱动语音.bat` / `关闭文字驱动语音.bat`（及 `start.bat`/`stop.bat` 通用入口）
+- `一键启动文字变声音.bat` / `关闭文字变声音.bat`（及 `start.bat`/`stop.bat` 通用入口）
 
 ## 3. 工作方式
 
-- 启动：双击 `start.bat` 或 `一键启动文字驱动语音.bat`（防重复双击、就绪自动开浏览器）；
+- 启动：双击 `start.bat` 或 `一键启动文字变声音.bat`（防重复双击、就绪自动开浏览器）；
   端口**固定 18062**、绝不自动漂移（对外接口地址必须稳定）；若 18062 被其他程序占用则明确报错退出，绝不杀其他项目的进程
 - 服务在前台黑框窗口运行，日志实时滚动（同时写 `tts_service\tmp\tts_python.log`，stdout/stderr 已合并且由 tts_api.py 自身双写；旧 `.err` 文件已废弃）
-- 停止：双击 `stop.bat` 或 `关闭文字驱动语音.bat`（按路径清扫本项目全部相关进程并**验证端口已释放**，关闭后绝不自动重启）；**直接关闭服务窗口亦可**——python 由 Windows Job 对象（KILL_ON_JOB_CLOSE）托管，窗口一死内核立即终止服务，显卡/内存随之释放，不留孤儿进程；tts_api.py 内另有父进程看护线程兜底；网页界面也有「⏹ 关闭服务」按钮
+- 停止：双击 `stop.bat` 或 `关闭文字变声音.bat`（按路径清扫本项目全部相关进程并**验证端口已释放**，关闭后绝不自动重启）；**直接关闭服务窗口亦可**——python 由 Windows Job 对象（KILL_ON_JOB_CLOSE）托管，窗口一死内核立即终止服务，显卡/内存随之释放，不留孤儿进程；tts_api.py 内另有父进程看护线程兜底；网页界面也有「⏹ 关闭服务」按钮
 - **服务绝不允许自动启动/自动重启**（2026-09-20 按用户要求移除旧"看门狗"）：只有用户双击 start.bat 才启动；崩溃/资源不足导致启动失败时脚本直接报错退出，等资源空出来由用户重新双击启动，禁止恢复任何自动拉起、自动重试逻辑
 - 自检：`GET /health`、`GET /models`；`python tests\test_tts_client.py` 冒烟合成
 - OpenAI 兼容端点（供 Open WebUI 等调用）：`POST /v1/audio/speech`（JSON {model, input, voice, speed} → mp3）、
@@ -59,5 +59,5 @@
 - tts_service/tts_api.py = 自研 FastAPI 封装（端口 18062；网页 + OpenAI 兼容 /v1/audio/speech + 启动窗口脚本），字节原样入库
 - 引擎/模型/端口/设备全部可用环境变量覆盖：GSV_ROOT / GSV_MODELS_DIR / TTS_API_PORT / TTS_DEVICE
 - 大件不入库：gptsovits\GPT-SoVITS(~4.6GB)、runtime\py312+ffmpeg(~9.6GB)、tts_service\models 音色(~1.9GB 真人音色)；摆位见 DEPLOY
-- 原中文 bat 已重写为 ASCII/CRLF/无 BOM；一键启动文字驱动语音.bat 为兼容壳
+- 原中文 bat 已重写为 ASCII/CRLF/无 BOM；一键启动文字变声音.bat 为兼容壳
 - tests 只保留自研脚本（E:\ 路径已相对化）；调试音频/转写/QA 记录不入库

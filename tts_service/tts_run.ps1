@@ -1,5 +1,5 @@
 ﻿# ============================================================
-# 文字驱动语音服务 启动窗口（由 start.bat 打开，前台控制台运行）
+# 文字变声音服务 启动窗口（由 start.bat 打开，前台控制台运行）
 # 行为约定（重要，勿再引入自动重启）：
 #   1. 只启动一次：本脚本只把 tts_api.py 拉起一次。服务退出后（无论正常
 #      退出、报错还是被停止）只打印退出原因，绝不自动重启——
@@ -13,7 +13,7 @@
 # 完全自包含：运行时/ffmpeg 均为项目内置（runtime\py312 / runtime\ffmpeg）
 # ============================================================
 $ErrorActionPreference = 'Continue'
-try { $Host.UI.RawUI.WindowTitle = 'WenZiQuDong 文字驱动语音 - 关闭此窗口即彻底停止服务(不会自动重启)' } catch {}
+try { $Host.UI.RawUI.WindowTitle = 'WenZiQuDong 文字变声音 - 关闭此窗口即彻底停止服务(不会自动重启)' } catch {}
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root      = Split-Path -Parent $scriptDir
