@@ -1,0 +1,10 @@
+=== 文字变声音 测试结论 2026-09-28 03:48:55 ===
+1) 服务启动 ✓ CUDA 推理,9个音色角色全部就绪(ayaka/azhong/fengyanlin/keai/laolei/liejun/liuyanhua/songwukong/yueliang)
+2) 真实合成 ✓ '你好,这是文字变声音服务的自动化测试。' → 4.7秒wav(75KB) 见 合成测试_azhong.wav
+3) 回归测试 ✓ 16/16全过(修复后)
+4) 发现并修复2个问题:
+   a) models目录扫描把 _ref_backup 备份目录当角色暴露 → list_role_dirs 跳过下划线开头目录
+   b) test_regression.py 断言过期(写死8角色/引用已删除的btnReset) → 改动态一致性校验
+5) UI ✓ 工作台页面正常 (见 TTS工作台.png)
+
+资源释放: 端口18062已释放,显存 10527MB→3718MB(余量全为系统进程dwm/explorer/Overlay)

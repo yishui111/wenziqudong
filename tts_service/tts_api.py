@@ -142,6 +142,9 @@ def list_role_dirs():
     out = []
     for name in sorted(os.listdir(GSV_MODELS_DIR)):
         p = os.path.join(GSV_MODELS_DIR, name)
+        # 下划线开头是内部/备份目录(如 _ref_backup)，不是角色，不对外展示
+        if name.startswith("_"):
+            continue
         if os.path.isdir(p) and CHARACTER_RE.match(name or ""):
             out.append((name, p))
     return out
